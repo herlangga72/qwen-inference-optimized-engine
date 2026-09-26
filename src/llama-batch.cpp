@@ -1025,11 +1025,10 @@ void llama_batch_free(struct llama_batch batch) {
 // llama_batch_ext
 
 size_t llama_batch_ext_select_n_embd_inp(llama_context_type ctx_type, llm_arch arch, const llama_hparams & hparams) {
+    GGML_UNUSED(arch);
+
     if (ctx_type == LLAMA_CONTEXT_TYPE_MTP) {
         return hparams.n_embd_out();
-    }
-    if (arch == LLM_ARCH_DFLASH) {
-        return hparams.n_embd_inp_enc();
     }
     return hparams.n_embd_inp();
 }
