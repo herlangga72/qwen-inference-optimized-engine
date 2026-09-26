@@ -173,28 +173,6 @@ static std::vector<ggml_backend_dev_t> parse_devices_arg(const std::string & val
     return devices;
 }
 
-static void register_rpc_server_list(const std::string & servers) {
-    auto rpc_servers = string_split<std::string>(servers, ',');
-    if (rpc_servers.empty()) {
-        throw std::invalid_argument("no RPC servers specified");
-    }
-
-    auto * rpc_reg = ggml_backend_reg_by_name("RPC");
-    if (!rpc_reg) {
-        throw std::invalid_argument("failed to find RPC backend");
-    }
-
-    using add_rpc_server_fn = ggml_backend_reg_t (*)(const char * endpoint);
-    auto * ggml_backend_rpc_add_server_fn = (add_rpc_server_fn) ggml_backend_reg_get_proc_address(rpc_reg, "ggml_backend_rpc_add_server");
-    if (!ggml_backend_rpc_add_server_fn) {
-        throw std::invalid_argument("failed to find RPC add server function");
-    }
-    for (const auto & server : rpc_servers) {
-        auto reg = ggml_backend_rpc_add_server_fn(server.c_str());
-        ggml_backend_register(reg);
-    }
-}
-
 static std::string devices_to_string(const std::vector<ggml_backend_dev_t> & devices) {
     if (devices.empty()) {
         return "auto";
@@ -442,9 +420,6 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("  --no-warmup                                 skip warmup runs before benchmarking\n");
     printf("  -fitt, --fit-target <MiB>                   fit model to device memory with this margin per device in MiB (default: off)\n");
     printf("  -fitc, --fit-ctx <n>                        minimum ctx size for --fit-target (default: 4096)\n");
-    if (llama_supports_rpc()) {
-        printf("  -rpc, --rpc <rpc_servers>                   register RPC devices (comma separated)\n");
-    }
     printf("\n");
     printf("test parameters:\n");
     printf("  -m, --model <filename>                            (default: %s)\n", join(cmd_params_defaults.model, ",").c_str());
@@ -735,18 +710,6 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                 }
                 auto p = parse_int_range(argv[i]);
                 params.n_cpu_moe.insert(params.n_cpu_moe.end(), p.begin(), p.end());
-            } else if (llama_supports_rpc() && (arg == "-rpc" || arg == "--rpc")) {
-                if (++i >= argc) {
-                    invalid_param = true;
-                    break;
-                }
-                try {
-                    register_rpc_server_list(argv[i]);
-                } catch (const std::exception & e) {
-                    fprintf(stderr, "error: %s\n", e.what());
-                    invalid_param = true;
-                    break;
-                }
             } else if (arg == "-sm" || arg == "--split-mode") {
                 if (++i >= argc) {
                     invalid_param = true;
@@ -1575,22 +1538,12 @@ struct test {
 
     static std::string get_backend() {
         std::vector<std::string> backends;
-        bool                     rpc_used = false;
         for (size_t i = 0; i < ggml_backend_reg_count(); i++) {
             auto *      reg  = ggml_backend_reg_get(i);
             std::string name = ggml_backend_reg_name(reg);
-            if (string_starts_with(name, "RPC")) {
-                if (ggml_backend_reg_dev_count(reg) > 0) {
-                    rpc_used = true;
-                }
-            } else {
-                if (name != "CPU") {
-                    backends.push_back(ggml_backend_reg_name(reg));
-                }
+            if (name != "CPU") {
+                backends.push_back(name);
             }
-        }
-        if (rpc_used) {
-            backends.push_back("RPC");
         }
         return backends.empty() ? "CPU" : join(backends, ",");
     }

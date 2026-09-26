@@ -11,10 +11,6 @@
 // FIXME: required here for quantization functions
 #include "ggml-quants.h"
 
-#ifdef GGML_USE_CPU_HBM
-#include <hbwmalloc.h>
-#endif
-
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
 #elif !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__OpenBSD__)
@@ -322,13 +318,6 @@ void ggml_log_callback_default(enum ggml_log_level level, const char * text, voi
 // end of logging block
 //
 
-#ifdef GGML_USE_ACCELERATE
-// uncomment to use vDSP for soft max computation
-// note: not sure if it is actually faster
-//#define GGML_SOFT_MAX_ACCELERATE
-#endif
-
-
 void * ggml_aligned_malloc(size_t size) {
 #if defined(__s390x__)
     const int alignment = 256;
@@ -344,9 +333,7 @@ void * ggml_aligned_malloc(size_t size) {
         return NULL;
     }
     void * aligned_memory = NULL;
-  #ifdef GGML_USE_CPU_HBM
-    int result = hbw_posix_memalign(&aligned_memory, alignment, size);
-  #elif TARGET_OS_OSX
+  #if TARGET_OS_OSX
     GGML_UNUSED(alignment);
     kern_return_t alloc_status = vm_allocate((vm_map_t) mach_task_self(), (vm_address_t *) &aligned_memory, size, VM_FLAGS_ANYWHERE);
     int result = EFAULT;
@@ -389,10 +376,6 @@ void ggml_aligned_free(void * ptr, size_t size) {
     GGML_UNUSED(size);
 #if defined(_MSC_VER) || defined(__MINGW32__)
     _aligned_free(ptr);
-#elif GGML_USE_CPU_HBM
-    if (ptr != NULL) {
-        hbw_free(ptr);
-    }
 #elif TARGET_OS_OSX
     if (ptr != NULL) {
         vm_deallocate((vm_map_t)mach_task_self(), (vm_address_t)ptr, size);

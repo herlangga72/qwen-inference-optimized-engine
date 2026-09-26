@@ -10,18 +10,6 @@
 #include <string>
 #include <vector>
 
-#ifdef GGML_USE_CPU_HBM
-#    include "hbm.h"
-#endif
-
-#ifdef GGML_USE_CPU_KLEIDIAI
-#    include "kleidiai/kleidiai.h"
-#endif
-
-#ifdef GGML_USE_CPU_RISCV64_SPACEMIT
-#    include "spacemit/ime.h"
-#endif
-
 #if defined(_WIN32)
 #    define WIN32_LEAN_AND_MEAN
 #    ifndef NOMINMAX
@@ -46,18 +34,6 @@ std::vector<ggml_backend_buffer_type_t> & ggml_backend_cpu_get_extra_buffer_type
 #if defined(__AMX_INT8__) && defined(__AVX512VNNI__)
         if (ggml_backend_amx_buffer_type()) {
             bufts.push_back(ggml_backend_amx_buffer_type());
-        }
-#endif
-
-#ifdef GGML_USE_CPU_RISCV64_SPACEMIT
-        if (ggml_backend_cpu_riscv64_spacemit_buffer_type()) {
-            bufts.push_back(ggml_backend_cpu_riscv64_spacemit_buffer_type());
-        }
-#endif
-
-#ifdef GGML_USE_CPU_KLEIDIAI
-        if (ggml_backend_cpu_kleidiai_buffer_type()) {
-            bufts.push_back(ggml_backend_cpu_kleidiai_buffer_type());
         }
 #endif
 
@@ -626,17 +602,8 @@ static ggml_backend_feature * ggml_backend_cpu_get_features(ggml_backend_reg_t r
         if (ggml_cpu_has_llamafile()) {
             features.push_back({ "LLAMAFILE", "1" });
         }
-    #ifdef GGML_USE_ACCELERATE
-        features.push_back({ "ACCELERATE", "1" });
-    #endif
-    #ifdef GGML_USE_CPU_HBM
-        features.push_back({ "CPU_HBM", "1" });
-    #endif
     #ifdef GGML_USE_OPENMP
         features.push_back({ "OPENMP", "1" });
-    #endif
-    #ifdef GGML_USE_CPU_KLEIDIAI
-        features.push_back({ "KLEIDIAI", "1" });
     #endif
     #ifdef GGML_USE_CPU_REPACK
         features.push_back({ "REPACK", "1" });

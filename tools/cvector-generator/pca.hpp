@@ -2,14 +2,6 @@
 #include "llama.h"
 #include "ggml.h"
 
-#ifdef GGML_USE_CUDA
-#include "ggml-cuda.h"
-#endif
-
-#ifdef GGML_USE_METAL
-#include "ggml-metal.h"
-#endif
-
 #include <cstdio>
 #include <ctime>
 #include <random>
@@ -61,27 +53,7 @@ struct pca_model {
     struct ggml_tensor * dev_eigenvector;
 
     pca_model(struct ggml_tensor * t_input) {
-#ifdef GGML_USE_CUDA
-        fprintf(stderr, "%s: using CUDA backend\n", __func__);
-        backend = ggml_backend_cuda_init(0); // init device 0
-        if (!backend) {
-            fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
-        }
-#endif
-
-// TODO: enable Metal support when support for GGML_OP_SQRT is added
-// #ifdef GGML_USE_METAL
-//         fprintf(stderr, "%s: using Metal backend\n", __func__);
-//         backend = ggml_backend_metal_init();
-//         if (!backend) {
-//             fprintf(stderr, "%s: ggml_backend_metal_init() failed\n", __func__);
-//         }
-// #endif
-
-        // if there aren't GPU Backends fallback to CPU backend
-        if (!backend) {
-            backend = ggml_backend_cpu_init();
-        }
+        backend = ggml_backend_cpu_init();
 
         const int num_tensors = 4;
         struct ggml_init_params params {
@@ -200,9 +172,7 @@ static ggml_status compute_piter(
     // allocate tensors
     ggml_gallocr_alloc_graph(allocr, gf);
 
-    if (ggml_backend_is_cpu(model.backend)) {
-        ggml_backend_cpu_set_n_threads(model.backend, params.n_threads);
-    }
+    ggml_backend_cpu_set_n_threads(model.backend, params.n_threads);
 
     ggml_status res = ggml_backend_graph_compute(model.backend, gf);
     if (res == GGML_STATUS_SUCCESS) {

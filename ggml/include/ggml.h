@@ -711,7 +711,7 @@ extern "C" {
 
         char name[GGML_MAX_NAME];
 
-        void * extra; // extra things e.g. for ggml-cuda.cu
+        void * extra;
 
         char padding[8];
     };

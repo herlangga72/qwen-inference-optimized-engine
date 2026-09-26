@@ -104,15 +104,7 @@ bool llama_supports_gpu_offload(void) {
         ggml_backend_load_all();
     }
     return ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) != nullptr ||
-           ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU) != nullptr ||
-           llama_supports_rpc();
-}
-
-bool llama_supports_rpc(void) {
-    if (!ggml_backend_reg_count()) {
-        ggml_backend_load_all();
-    }
-    return ggml_backend_reg_by_name("RPC") != nullptr;
+           ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU) != nullptr;
 }
 
 const char * llama_version(void) {
@@ -188,7 +180,6 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
         // build list of available devices
         std::vector<llama_device> gpus;
         std::vector<llama_device> igpus;
-        std::vector<llama_device> rpc_servers;
 
         if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR) {
             std::vector<ggml_backend_dev_t> devs;
@@ -228,31 +219,26 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                         break;
 
                     case GGML_BACKEND_DEVICE_TYPE_GPU: {
-                        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
-                        if (ggml_backend_reg_name(reg) == std::string("RPC")) {
-                            rpc_servers.push_back({false, dev});
-                        } else {
-                            // check if there is already a GPU with the same device id
-                            ggml_backend_dev_props props;
-                            ggml_backend_dev_get_props(dev, &props);
-                            auto it = std::find_if(gpus.begin(), gpus.end(), [&props](const llama_device & d) {
-                                ggml_backend_dev_props d_props;
-                                ggml_backend_dev_get_props(d.dev, &d_props);
-                                if (props.device_id && d_props.device_id) {
-                                    return strcmp(props.device_id, d_props.device_id) == 0;
-                                }
-                                return false;
-                            });
-
-                            if (it != gpus.end()) {
-                                LLAMA_LOG_INFO("%s: skipping device %s (%s) with id %s - already using device %s (%s) with the same id\n",
-                                        __func__,
-                                        ggml_backend_dev_name(dev), ggml_backend_dev_description(dev),
-                                        props.device_id ? props.device_id : "unknown id",
-                                        ggml_backend_dev_name(it->dev), ggml_backend_dev_description(it->dev));
-                            } else {
-                                gpus.push_back({false, dev});
+                        // check if there is already a GPU with the same device id
+                        ggml_backend_dev_props props;
+                        ggml_backend_dev_get_props(dev, &props);
+                        auto it = std::find_if(gpus.begin(), gpus.end(), [&props](const llama_device & d) {
+                            ggml_backend_dev_props d_props;
+                            ggml_backend_dev_get_props(d.dev, &d_props);
+                            if (props.device_id && d_props.device_id) {
+                                return strcmp(props.device_id, d_props.device_id) == 0;
                             }
+                            return false;
+                        });
+
+                        if (it != gpus.end()) {
+                            LLAMA_LOG_INFO("%s: skipping device %s (%s) with id %s - already using device %s (%s) with the same id\n",
+                                    __func__,
+                                    ggml_backend_dev_name(dev), ggml_backend_dev_description(dev),
+                                    props.device_id ? props.device_id : "unknown id",
+                                    ggml_backend_dev_name(it->dev), ggml_backend_dev_description(it->dev));
+                        } else {
+                            gpus.push_back({false, dev});
                         }
                         break;
                     }
@@ -272,14 +258,10 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
             }
         }
 
-        // add RPC servers at the front of the list to minimize network transfers
-        model->devices.insert(model->devices.begin(), rpc_servers.begin(), rpc_servers.end());
-
         // add GPUs
         model->devices.insert(model->devices.end(), gpus.begin(), gpus.end());
 
         // add integrated GPUs only if no discrete GPUs were found
-        // (RPC servers do not count, otherwise the local iGPU would be dropped on iGPU+RPC setups)
         if (gpus.empty()) {
             model->devices.insert(model->devices.end(), igpus.begin(), igpus.end());
         }

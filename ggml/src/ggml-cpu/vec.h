@@ -7,10 +7,6 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
 
-#if defined(GGML_USE_ACCELERATE)
-#include <Accelerate/Accelerate.h>
-#endif
-
 // floating point type used to accumulate sums
 typedef double ggml_float;
 
@@ -653,9 +649,7 @@ inline static void ggml_vec_mad_f32_unroll(const int n, const int xs, const int 
 }
 
 inline static void ggml_vec_mad1_f32(const int n, float * y, const float * x, const float s, const float b) {
-#if defined(GGML_USE_ACCELERATE)
-    vDSP_vsmsa(x, 1, &s, &b, y, 1, n);
-#elif defined(GGML_SIMD)
+#if defined(GGML_SIMD)
     #if defined(__ARM_FEATURE_SVE)
         // scalar ; TODO: Write SVE code
         for (int i = 0; i < n; ++i) {
@@ -701,9 +695,7 @@ inline static void ggml_vec_mad1_f32(const int n, float * y, const float * x, co
 
 //inline static void ggml_vec_scale_f32(const int n, float * y, const float   v) { for (int i = 0; i < n; ++i) y[i] *= v;          }
 inline static void ggml_vec_scale_f32(const int n, float * y, const float   v) {
-#if defined(GGML_USE_ACCELERATE)
-    vDSP_vsmul(y, 1, &v, y, 1, n);
-#elif defined(GGML_SIMD)
+#if defined(GGML_SIMD)
     #if defined(__ARM_FEATURE_SVE)
         const int sve_register_length = ggml_cpu_get_sve_cnt() * 8;
         const int ggml_f32_epr = sve_register_length / 32;//8;//svcntw(); // SVE128:4, SVE256:8, SVE512:16
@@ -1493,15 +1485,11 @@ inline static void ggml_vec_geglu_quick_f16(const int n, ggml_fp16_t * y, const 
 }
 
 inline static void ggml_vec_sum_f32(const int n, float * s, const float * x) {
-#ifndef GGML_USE_ACCELERATE
     ggml_float sum = 0.0;
     for (int i = 0; i < n; ++i) {
         sum += (ggml_float)x[i];
     }
     *s = (float)sum;
-#else
-    vDSP_sve(x, 1, s, n);
-#endif
 }
 
 inline static void ggml_vec_cumsum_f32(const int n, float * y, const float * x) {
@@ -1539,15 +1527,11 @@ inline static void ggml_vec_sum_bf16_ggf(const int n, float * s, const ggml_bf16
 }
 
 inline static void ggml_vec_max_f32(const int n, float * s, const float * x) {
-#ifndef GGML_USE_ACCELERATE
     float max = -INFINITY;
     for (int i = 0; i < n; ++i) {
         max = MAX(max, x[i]);
     }
     *s = max;
-#else
-    vDSP_maxv(x, 1, s, n);
-#endif
 }
 
 inline static void ggml_vec_norm_inv_f32(const int n, float * s, const float * x) {
