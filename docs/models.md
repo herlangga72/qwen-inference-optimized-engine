@@ -7,11 +7,14 @@ The [Hugging Face](https://huggingface.co) platform hosts [thousands of models](
 You can use any `llama.cpp`-compatible model from [Hugging Face](https://huggingface.co/) using this CLI argument: `-hf <user>/<model>[:quant]`. For example:
 
 ```sh
-llama cli -hf ggml-org/gemma-3-1b-it-GGUF
+llama cli -hf unsloth/Qwen3.5-4B-GGUF
 ```
 
 You can use the same CLI invocation to download from other sites, by pointing the `MODEL_ENDPOINT` environment variable to an endpoint compatible with the Hugging Face API.
 `llama.cpp` can also run models you have downloaded locally to your filesystem.
+
+Note: this fork only supports the Qwen3.5 and up family, see [QWEN_ONLY.md](../QWEN_ONLY.md) for the
+list of supported architectures.
 
 After downloading a model, use the CLI tools to run it locally - see below.
 
