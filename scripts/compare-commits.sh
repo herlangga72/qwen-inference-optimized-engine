@@ -43,9 +43,9 @@ fi
 
 rm -f "$db_file" > /dev/null
 
-# to test a backend, call the script with the corresponding environment variable (e.g. GGML_CUDA=1 ./scripts/compare-commits.sh ...)
-if [ -n "$GGML_CUDA" ]; then
-    CMAKE_OPTS="${CMAKE_OPTS} -DGGML_CUDA=ON"
+# to test a backend, call the script with the corresponding environment variable (e.g. GGML_VULKAN=1 ./scripts/compare-commits.sh ...)
+if [ -n "$GGML_VULKAN" ]; then
+    CMAKE_OPTS="${CMAKE_OPTS} -DGGML_VULKAN=ON"
 fi
 
 dir="build-bench"

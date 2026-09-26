@@ -26,6 +26,50 @@ Related support kept because the kept models need it:
 
 Any other arch name is rejected at load time with `unsupported model architecture`.
 
+## Backends
+
+This tree builds the CPU and the Vulkan backend and nothing else.
+
+| `GGML_*` option | status |
+| --- | --- |
+| `GGML_CPU` (default ON) | x86-64 only: `arch/x86` kernels, AMX, tiled k-quant mul-mat, llamafile sgemm, OpenMP |
+| `GGML_VULKAN` (default OFF) | full Vulkan backend, SPIR-V generated at build time by `glslc` + `vulkan-shaders-gen` |
+
+```sh
+cmake -B build    -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON
+cmake -B build-vk -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_VULKAN=ON
+```
+
+Dynamic backends stay: `-DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON` builds
+`ggml-cpu` and `ggml-vulkan` as loadable modules, and `-DGGML_CPU_ALL_VARIANTS=ON`
+additionally builds one CPU module per x86 feature level.
+
+### Removed backends
+
+- the other 16 backends: `ggml-blas`, `ggml-cann`, `ggml-cuda`, `ggml-et`, `ggml-hexagon`,
+  `ggml-hip`, `ggml-metal`, `ggml-musa`, `ggml-opencl`, `ggml-openvino`, `ggml-rpc`,
+  `ggml-sycl`, `ggml-virtgpu`, `ggml-webgpu`, `ggml-zdnn`, `ggml-zendnn`
+- their headers in `ggml/include`, their entries in `GGML_PUBLIC_HEADERS`, their option
+  blocks in `ggml/CMakeLists.txt`, their `ggml_add_backend()` calls, and their
+  `register_backend()` and `ggml_backend_load_best()` entries
+- the non-x86 CPU sources: `ggml-cpu/spacemit`, `ggml-cpu/kleidiai` and
+  `ggml-cpu/arch/{arm,loongarch,powerpc,riscv,s390,wasm}`, plus the CMake branches that
+  selected them and the non-x86 `GGML_CPU_ALL_VARIANTS` lists
+- CPU feature paths whose options no longer exist: Accelerate/vDSP, CPU HBM (memkind),
+  KleidiAI, SpacemiT IME, and `ggml-cpu/hbm.{cpp,h}`
+- RPC: the `--rpc` flag, `llama_supports_rpc()`, the RPC device ordering in
+  `src/llama.cpp`, `tools/rpc`, and `tests/test-rpc-multi-server.*`
+- CI: `.github/workflows`, `.github/actions`, `.github/labeler.yml`, `ci/`, and the
+  Dockerfiles and SRPM spec for the removed backends under `.devops/` (`.devops/nix`
+  stays, `flake.nix` uses it)
+- docs and build presets for the removed backends: `docs/backend/`, the matching
+  `docs/ops/*.csv`, `docs/multi-gpu.md`, `docs/docker.md`, `docs/release.md`, the
+  `x64-windows-sycl-*` and `arm64-*` presets, and their toolchain files
+
+`ggml-cpu/vec.h`, `quants.c` and the other shared CPU files still carry the `#if`
+ladders for non-x86 SIMD. They compile out on x86, and deleting them would touch every
+kernel, so they stay.
+
 ## Removed
 
 - the other 150 model implementations in `src/models/`
@@ -81,6 +125,27 @@ Run on the dieted tree, AMD Ryzen 7 6800H, CPU backend:
 The same generation and tokenizer baselines are what the tests above compare against, so any future
 change that alters Qwen3.5 inference will show up as a diff there.
 
+### Backend diet (2026-09-26)
+
+Same machine. Pre-diet reference builds: `build-diet` (CPU) and `build-vk` (CPU + Vulkan), built from
+the same commit before the backend diet. `test-llama-archs` is run with `-s 1` so the two runs can be
+compared byte for byte. Timestamps in the logs are the only thing stripped before diffing.
+
+| check | result |
+| --- | --- |
+| CPU build (Release, `GGML_NATIVE=ON`, tests ON) | 0 errors |
+| Vulkan build (same plus `GGML_VULKAN=ON`) | 0 errors |
+| dynamic backends (`BUILD_SHARED_LIBS=ON`, `GGML_BACKEND_DL=ON`, `GGML_CPU_ALL_VARIANTS=ON`, `GGML_VULKAN=ON`, `GGML_NATIVE=OFF`) | 0 errors, and at runtime `libggml-vulkan.so` plus the matching `libggml-cpu-<variant>.so` are loaded |
+| `test-llama-archs` qwen35 / qwen35moe / qwen4exp, seed 1, CPU | byte-identical to pre-diet |
+| same three with `-b Vulkan0` | byte-identical to pre-diet |
+| `ctest -L main` | 34 / 34 (CPU build), 34 / 34 (Vulkan build) |
+| `test-backend-ops -b CPU` | 19914 / 19914, same count as pre-diet |
+| `test-backend-ops -b Vulkan0` | 18976 / 18976, same count as pre-diet |
+| `test-tokenizer-0` on both vocab fixtures | identical to pre-diet |
+| Qwen3.6-35B-A3B IQ3_XXS (`qwen35moe`) 16-token greedy generation, CPU | identical text to pre-diet |
+| the same on Vulkan0 (`-ngl 99`, all 84 layer assignments to Vulkan0) | identical text to pre-diet |
+| grep guard for removed backend headers, dirs and `GGML_*` options | no references left |
+
 ## Deliberate retentions
 
 - `models/templates/*.jinja`: chat/autoparser test corpus, arch independent (the chat parsing tests
@@ -89,6 +154,9 @@ change that alters Qwen3.5 inference will show up as a diff there.
 - `conversion/base.py` `get_vocab_base_pre()` hash table: tokenizer fingerprints. A model whose
   fingerprint is missing fails conversion outright, and fingerprints cannot be derived from the arch,
   so the table stays intact.
+- `GGML_BACKEND_DL` / `GGML_CPU_ALL_VARIANTS`: kept, so `ggml-cpu` (one module per x86
+  feature level) and `ggml-vulkan` can be built and loaded as dynamic libraries.
+- `test-backend-ops`: generic, so it stays whole and is the engine check for both backends.
 - public API enum values in `include/llama.h` (for example `llama_vocab_type`): the implementations
   were pruned but the enum values stay so the public headers and ABI stay stable.
 - `clip` arch and `src/models/clip.cpp`: `llama-quantize` uses this stub to quantize mmproj GGUFs.

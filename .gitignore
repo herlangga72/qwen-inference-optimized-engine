@@ -60,10 +60,6 @@
 /main
 /server
 
-# CI
-
-!/.github/workflows/*.yml
-
 # Models
 
 /models/*

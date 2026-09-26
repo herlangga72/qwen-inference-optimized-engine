@@ -11,9 +11,8 @@
 ## conda-forge (Windows, Mac and Linux)
 
 conda-forge provides builds for:
- - CUDA (Windows and Linux)
+ - CPU
  - Vulkan (Windows and Linux)
- - Apple Metal (macOS)
 
 ```sh
 conda install -c conda-forge llama.cpp
