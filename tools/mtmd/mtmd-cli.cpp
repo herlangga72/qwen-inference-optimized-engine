@@ -122,7 +122,6 @@ struct mtmd_cli_context {
 
         if (!mtmd_helper_model_can_chat(lctx, ctx_vision.get())) {
             LOG_ERR("Model does not support chat mode\n");
-            LOG_ERR("Hint: for TTS models, please use llama-tts\n");
             exit(1);
         }
 

@@ -11,18 +11,6 @@
 
 #define DEFAULT_INTERPOLATION_MODE (GGML_SCALE_MODE_BILINEAR | GGML_SCALE_FLAG_ANTIALIAS)
 
-struct build_vit_opts {
-    ggml_tensor * attn_mask = nullptr;
-    // TODO @ngxson : merge attn_mask and attn_mask_layers into one call
-    std::vector<ggml_tensor *> attn_mask_layers; // one per layer
-
-    // hook at layer output embeddings
-    std::function<void(ggml_tensor * cur, int il)> callback_layer_out = nullptr;
-
-    // whether to skip the automatic post-layernorm (model.post_ln_w) applied at the end
-    bool skip_post_ln = false;
-};
-
 struct clip_graph {
     const clip_model & model;
     const clip_hparams & hparams;
@@ -74,26 +62,8 @@ struct clip_graph {
     //
     void cb(ggml_tensor * cur0, const char * name, int il) const;
 
-    const clip_image_f32 & get_img(size_t idx) const {
-        GGML_ASSERT(img_batch);
-        GGML_ASSERT(idx < img_batch->entries.size());
-        return img_batch->entries[idx];
-    }
-
     // siglip2 naflex
     ggml_tensor * resize_position_embeddings(uint32_t interpolation_mode = DEFAULT_INTERPOLATION_MODE);
-
-    // build vision transformer (ViT) cgraph
-    // this function should cover most of the models
-    // if your model has specific features, you should probably duplicate this function
-    ggml_tensor * build_vit(
-                ggml_tensor * inp,
-                int64_t n_pos,
-                norm_type norm_t,
-                ffn_op_type ffn_t,
-                ggml_tensor * learned_pos_embd,
-                std::function<ggml_tensor *(ggml_tensor *, const clip_layer &)> add_pos,
-                const build_vit_opts & opts = {});
 
     // build the input after conv2d (inp_raw --> patches)
     // returns tensor with shape [n_embd, n_patches]
@@ -120,12 +90,6 @@ struct clip_graph {
             ffn_op_type type_op,
             int il) const;
 
-    ggml_tensor * build_moe_ffn(
-            ggml_tensor * cur,
-            const clip_layer & layer,
-            ffn_op_type type_op,
-            int il) const;
-
     ggml_tensor * build_attn(
             ggml_tensor * wo,
             ggml_tensor * wo_b,
@@ -136,30 +100,4 @@ struct clip_graph {
             float kq_scale,
             int il,
             ggml_tensor * sinks = nullptr) const;
-
-    // implementation of the 2D RoPE using two ggml_rope_ext calls
-    //
-    // unlike GGML_ROPE_TYPE_VISION which forces NEOX ordering, this rotates adjacent pairs (normal ordering)
-    //
-    // example:
-    //  given a single head with size = 8 --> [00000000]
-    //  dims [0, 4) rotate with pos_a, dims [4, 8) rotate with pos_b --> [aaaabbbb]
-    //  interleave_freq = false --> both halves use the same inv_freq set (like GGML_ROPE_TYPE_VISION)
-    //  interleave_freq = true  --> first half uses even inv_freq, second half uses odd inv_freq (used by pixtral)
-    ggml_tensor * build_rope_2d(
-        ggml_context * ctx0,
-        ggml_tensor * cur,
-        ggml_tensor * pos_a, // first half
-        ggml_tensor * pos_b, // second half
-        const float freq_base,
-        const bool interleave_freq
-    );
-
-    // aka pixel_shuffle / pixel_unshuffle / patch_merger (Kimi-VL)
-    // support dynamic resolution
-    ggml_tensor * build_patch_merge_permute(ggml_tensor * cur, int scale_factor);
-
-    // Generic function to stack frames for audio processing
-    // Abstracts out the StackAudioFrames logic used by ultravox
-    ggml_tensor * build_stack(ggml_tensor * cur, int32_t stack_factor, int32_t n_embed);
 };

@@ -1,67 +1,57 @@
-# Multimodal Support in llama.cpp
+# Multimodal support in this fork
 
-This directory provides multimodal capabilities for `llama.cpp`. Initially intended as a showcase for running LLaVA models, its scope has expanded significantly over time to include various other vision-capable models. As a result, LLaVA is no longer the only multimodal architecture supported.
-
-> [!IMPORTANT]
->
-> Multimodal support can be viewed as a sub-project within `llama.cpp`. It is under **very heavy development**, and **breaking changes are expected**.
-
-The naming and structure related to multimodal support have evolved, which might cause some confusion. Here's a brief timeline to clarify:
-
-- [#3436](https://github.com/ggml-org/llama.cpp/pull/3436): Initial support for LLaVA 1.5 was added, introducing `llava.cpp` and `clip.cpp`. The `llava-cli` binary was created for model interaction.
-- [#4954](https://github.com/ggml-org/llama.cpp/pull/4954): Support for MobileVLM was added, becoming the second vision model supported. This built upon the existing `llava.cpp`, `clip.cpp`, and `llava-cli` infrastructure.
-- **Expansion & Fragmentation:** Many new models were subsequently added (e.g., [#7599](https://github.com/ggml-org/llama.cpp/pull/7599), [#10361](https://github.com/ggml-org/llama.cpp/pull/10361), [#12344](https://github.com/ggml-org/llama.cpp/pull/12344), and others). However, `llava-cli` lacked support for the increasingly complex chat templates required by these models. This led to the creation of model-specific binaries like `qwen2vl-cli`, `minicpmv-cli`, and `gemma3-cli`. While functional, this proliferation of command-line tools became confusing for users.
-- [#12849](https://github.com/ggml-org/llama.cpp/pull/12849): `libmtmd` was introduced as a replacement for `llava.cpp`. Its goals include providing a single, unified command-line interface, improving the user/developer experience (UX/DX), and supporting both audio and image inputs.
-- [#13012](https://github.com/ggml-org/llama.cpp/pull/13012): `mtmd-cli` was added, consolidating the various model-specific CLIs into a single tool powered by `libmtmd`.
+This directory provides the multimodal capabilities of this fork: `libmtmd` plus the `clip` encoder.
+The fork only supports the **Qwen3.5 family**, so the only supported projector is `QWEN3VL`, which is
+what the Qwen3.5-VL vision tower (and the Qwen4Exp vision tower, an unmodified Qwen3-VL ViT) uses.
+Audio input is not supported here.
 
 ## Pre-quantized models
 
-See the list of pre-quantized model [here](../../docs/multimodal.md)
+See the list of pre-quantized models [here](../../docs/multimodal.md)
 
 ## How it works and what is `mmproj`?
 
-Multimodal support in `llama.cpp` works by encoding images into embeddings using a separate model component, and then feeding these embeddings into the language model.
+Multimodal support works by encoding images into embeddings with a separate model component, and then
+feeding these embeddings into the language model.
 
-This approach keeps the multimodal components distinct from the core `libllama` library. Separating these allows for faster, independent development cycles. While many modern vision models are based on Vision Transformers (ViTs), their specific pre-processing and projection steps can vary significantly. Integrating this diverse complexity directly into `libllama` is currently challenging.
+This keeps the multimodal components distinct from the core `libllama` library. Separating them allows
+faster, independent development. While many modern vision models are based on Vision Transformers
+(ViTs), their specific pre-processing and projection steps vary significantly, and integrating that
+complexity directly into `libllama` is challenging.
 
-Consequently, running a multimodal model typically requires two GGUF files:
-1.  The standard language model file.
-2.  A corresponding **multimodal projector (`mmproj`)** file, which handles the image encoding and projection.
+Consequently, running a multimodal model requires two GGUF files:
+1. The standard language model file (for Qwen3.5-VL this is a plain `qwen35` / `qwen35moe` GGUF).
+2. A corresponding **multimodal projector (`mmproj`)** file, which handles the image encoding and
+   projection.
 
 ## What is `libmtmd`?
 
-As outlined in the history, `libmtmd` is the modern library designed to replace the original `llava.cpp` implementation for handling multimodal inputs.
-
-Built upon `clip.cpp` (similar to `llava.cpp`), `libmtmd` offers several advantages:
-- **Unified Interface:** Aims to consolidate interaction for various multimodal models.
-- **Improved UX/DX:** Features a more intuitive API, inspired by the `Processor` class in the Hugging Face `transformers` library.
-- **Flexibility:** Designed to support multiple input types (text, audio, images) while respecting the wide variety of chat templates used by different models.
+`libmtmd` is the library that handles multimodal inputs. Built on top of `clip.cpp`, it offers:
+- **Unified interface:** one API and one CLI (`llama-mtmd-cli`) for the supported model family.
+- **Improved UX/DX:** an API inspired by the `Processor` class in the Hugging Face `transformers`
+  library.
+- **Flexibility:** image input today, with the encoder/projector split kept generic.
 
 ## How to obtain `mmproj`
 
-Multimodal projector (`mmproj`) files are specific to each model architecture.
+Multimodal projector files are specific to each model architecture. For Qwen3.5-VL, use
+`convert_hf_to_gguf.py --mmproj` on the Hugging Face checkpoint:
 
-For the following models, you can use `convert_hf_to_gguf.py` with `--mmproj` flag to get the `mmproj` file:
-- [Gemma 3](https://huggingface.co/collections/google/gemma-3-release-67c6c6f89c4f76621268bb6d) ; See the guide [here](../../docs/multimodal/gemma3.md) - Note: 1B variant does not have vision support
-- SmolVLM (from [HuggingFaceTB](https://huggingface.co/HuggingFaceTB))
-- SmolVLM2 (from [HuggingFaceTB](https://huggingface.co/HuggingFaceTB))
-- [Pixtral 12B](https://huggingface.co/mistral-community/pixtral-12b) - only works with `transformers`-compatible checkpoint
-- Qwen 2 VL and Qwen 2.5 VL (from [Qwen](https://huggingface.co/Qwen))
-- [Mistral Small 3.1 24B](https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503)
-- InternVL 2.5 and InternVL 3 from [OpenGVLab](https://huggingface.co/OpenGVLab) (note: we don't support conversion of `InternVL3-*-hf` model, only non-HF version is supported ; `InternLM2Model` **text** model is not supported)
-- [MiniCPM-V 4.6](https://huggingface.co/openbmb/MiniCPM-V-4_6) ; See the guide [here](../../docs/multimodal/minicpmv4.6.md) - requires the standard `transformers` v5.7.0+ checkpoint
+- Qwen3.5-VL (dense and MoE, for example `Qwen/Qwen3.5-9B` / `Qwen/Qwen3.5-35B-A3B`)
 
-For older models, please refer to the relevant guide for instructions on how to obtain or create them:
+The resulting mmproj declares `clip.projector_type = qwen3vl_merger`, which this fork maps to
+`PROJECTOR_TYPE_QWEN3VL`.
 
-NOTE: conversion scripts are located under `tools/mtmd/legacy-models`
+Pre-quantized mmproj files can also be found alongside the text GGUFs on Hugging Face:
 
-- [LLaVA](../../docs/multimodal/llava.md)
-- [MobileVLM](../../docs/multimodal/MobileVLM.md)
-- [GLM-Edge](../../docs/multimodal/glmedge.md)
-- [MiniCPM-V 2.5](../../docs/multimodal/minicpmv2.5.md)
-- [MiniCPM-V 2.6](../../docs/multimodal/minicpmv2.6.md)
-- [MiniCPM-o 2.6](../../docs/multimodal/minicpmo2.6.md)
-- [MiniCPM-V 4.0](../../docs/multimodal/minicpmv4.0.md)
-- [MiniCPM-o 4.0](../../docs/multimodal/minicpmo4.0.md)
-- [MiniCPM-V 4.5](../../docs/multimodal/minicpmv4.5.md)
-- [IBM Granite Vision](../../docs/multimodal/granitevision.md)
+- https://huggingface.co/models?pipeline_tag=image-text-to-text&sort=trending&search=qwen3.5
+
+## Smoke test
+
+`tests.sh` runs `llama-mtmd-cli` on one text GGUF plus its mmproj:
+
+```sh
+MODEL=/path/to/qwen35-vl-text.gguf MMPROJ=/path/to/mmproj-qwen35-vl.gguf ./tools/mtmd/tests.sh
+```
+
+`IMAGE` (default `test-1.jpeg`) and `VIDEO` can be set to override the inputs.

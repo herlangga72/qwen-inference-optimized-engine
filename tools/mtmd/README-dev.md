@@ -56,7 +56,7 @@ Due to wide variety of audio generation pipelines, the `mtmd_gen_audio` system i
 
 `mtmd_gen_audio` is split into 2 main API:
 - Core API `mtmd.h`: handles main inference. Important: the API surface must be stateless; caller must handle state management and audio frame accumulation.
-- Helper API `mtmd-helper.h`: provides a model-agnostic stateful API. Usage example can be found in the `tools/tts` directory.
+- Helper API `mtmd-helper.h`: provides a model-agnostic stateful API.
 
 ### Checklist for porting new audio generation models to mtmd
 
@@ -83,7 +83,7 @@ Due to wide variety of audio generation pipelines, the `mtmd_gen_audio` system i
     - 60% changes inside `mtmd-helper-gen.cpp`
     - 10% changes inside `libmtmd` and `clip.cpp` systems
     - The rest downstream code (CLI, server) should have no changes at all
-5. Update usage documentation in `tools/tts/README.md`
+5. Update usage documentation in the tool that drives the new pipeline
 
 IMPORTANT: If your model needs changes that don't fit the existing infrastructure, **open an issue first for discussion**.
 

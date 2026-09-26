@@ -27,7 +27,6 @@
 
 #define MTMD_INTERNAL_HEADER
 
-#define KEY_FTYPE               "general.file_type"
 #define KEY_NAME                "general.name"
 #define KEY_DESCRIPTION         "general.description"
 #define KEY_PROJ_TYPE           "clip.projector_type"
@@ -50,53 +49,23 @@
 // vision-specific
 #define KEY_VISION_PROJ_TYPE        "clip.vision.projector_type" // for models with mixed modalities
 #define KEY_IMAGE_SIZE              "clip.vision.image_size"
-#define KEY_IMAGE_MIN_PIXELS        "clip.vision.image_min_pixels"
-#define KEY_IMAGE_MAX_PIXELS        "clip.vision.image_max_pixels"
-#define KEY_PREPROC_MIN_TILES       "clip.vision.preproc_min_tiles"
-#define KEY_PREPROC_MAX_TILES       "clip.vision.preproc_max_tiles"
-#define KEY_PREPROC_IMAGE_SIZE      "clip.vision.preproc_image_size"
 #define KEY_PATCH_SIZE              "clip.vision.patch_size"
 #define KEY_IMAGE_MEAN              "clip.vision.image_mean"
 #define KEY_IMAGE_STD               "clip.vision.image_std"
-#define KEY_PROJ_SCALE_FACTOR       "clip.vision.projector.scale_factor"
-#define KEY_PROJ_SAMPLE_QUERY_SIDE  "clip.vision.projector.query_side"
-#define KEY_PROJ_SAMPLE_WINDOW_SIDE "clip.vision.projector.window_side"
-#define KEY_PROJ_SPATIAL_OFFSETS    "clip.vision.projector.spatial_offsets"
 #define KEY_SPATIAL_MERGE_SIZE      "clip.vision.spatial_merge_size"
 
 #define KEY_MM_PATCH_MERGE_TYPE    "clip.vision.mm_patch_merge_type"
 #define KEY_IMAGE_GRID_PINPOINTS   "clip.vision.image_grid_pinpoints"
 #define KEY_WIN_ATTN_PATTERN       "clip.vision.n_wa_pattern"
-#define KEY_WIN_ATTN_LAYER_INDEXES "clip.vision.wa_layer_indexes"
-#define KEY_WA_PATTERN_MODE        "clip.vision.wa_pattern_mode"
-#define KEY_ATTN_WINDOW_SIZE       "clip.vision.window_size"
 #define KEY_MINICPMV_VERSION       "clip.minicpmv_version"
 #define KEY_MINICPMV_QUERY_NUM     "clip.minicpmv_query_num"
-#define KEY_SAM_N_HEAD             "clip.vision.sam.head_count"
-#define KEY_SAM_N_BLOCK            "clip.vision.sam.block_count"
-#define KEY_SAM_N_EMBD             "clip.vision.sam.embedding_length"
-#define KEY_VISION_N_EXPERT_USED   "clip.vision.expert_used_count"
 // audio-specific
 #define KEY_AUDIO_PROJ_TYPE        "clip.audio.projector_type" // for models with mixed modalities
 #define KEY_A_NUM_MEL_BINS         "clip.audio.num_mel_bins"
-#define KEY_A_PROJ_STACK_FACTOR    "clip.audio.projector.stack_factor"
-#define KEY_A_CHUNK_SIZE           "clip.audio.chunk_size"
-#define KEY_A_CONV_KERNEL_SIZE     "clip.audio.conv_kernel_size"
-#define KEY_A_MAX_POS_EMB          "clip.audio.max_pos_emb"
-#define KEY_A_PROJ_WINDOW_SIZE     "clip.audio.projector.window_size"
-#define KEY_A_PROJ_DOWNSAMPLE_RATE "clip.audio.projector.downsample_rate"
-#define KEY_A_PROJ_HEAD_COUNT      "clip.audio.projector.head_count"
-#define KEY_A_RVQ_NUM_QUANTIZERS   "clip.audio.rvq.num_quantizers"   // mimo-audio-tokenizer
-#define KEY_A_RVQ_CODEBOOK_SIZE    "clip.audio.rvq.codebook_size"    // mimo-audio-tokenizer: per-quantizer bin count
-#define KEY_A_WA_PATTERN_MODE      "clip.audio.wa_pattern_mode"      // mimo-audio-tokenizer, per-layer -1 (full) / 0 (windowed)
-#define KEY_A_ATTN_WINDOW_SIZE     "clip.audio.window_size"          // mimo-audio-tokenizer: sliding-window radius
-#define KEY_A_LOCAL_BLOCK_COUNT    "clip.audio.local_block_count"    // mimo-v2.5: input_local_transformer layer count
-#define KEY_A_LOCAL_GROUP_SIZE     "clip.audio.local_group_size"     // mimo-v2.5: input_local_transformer grouping size
 // audio generation (gen-audio)-specific
 #define KEY_GEN_AUDIO_PROJ_TYPE    "clip.gen.audio.projector_type" // for models with mixed modalities
 // name of the weight variant, for settings that are not in the checkpoint
 #define KEY_GEN_AUDIO_VARIANT      "clip.gen.audio.model_variant"
-#define KEY_AUDIO_SUBSMPL_FACTOR   "clip.audio.subsampling_factor"
 
 //
 // tensor name constants
@@ -108,7 +77,6 @@
 #define TN_PATCH_EMBD_1    "v.patch_embd.weight.1"
 #define TN_PATCH_BIAS      "v.patch_embd.bias"
 #define TN_NORM_EMBD       "v.norm_embd.%s"
-#define TN_PATCH_NORM      "v.patch_norm.%d.%s"
 #define TN_ATTN_QKV        "%s.blk.%d.attn_qkv.%s"
 #define TN_ATTN_K          "%s.blk.%d.attn_k.%s"
 #define TN_ATTN_Q          "%s.blk.%d.attn_q.%s"
@@ -135,304 +103,9 @@
 #define TN_LN_PRE          "%s.pre_ln.%s"
 #define TN_LN_POST         "%s.post_ln.%s"
 #define TN_LLAVA_PROJ      "mm.%d.%s"
-#define TN_MM_UP           "mm.up.%s"
-#define TN_MM_GATE         "mm.gate.%s"
-#define TN_MM_DOWN         "mm.down.%s"
-#define TN_MM_POST_NORM    "mm.post_norm.%s"
-#define TN_MVLM_PROJ_MLP   "mm.model.mlp.%d.%s"
-#define TN_MVLM_PROJ_BLOCK "mm.model.mb_block.%d.block.%d.%s"
-#define TN_MVLM_PROJ_PEG   "mm.model.peg.%d.%s"
-#define TN_IMAGE_NEWLINE   "v.image_newline"
-#define TN_IMAGE_SEPERATOR "v.view_seperator"
-#define TN_MM_INP_NORM     "mm.input_norm.weight"
-#define TN_MM_INP_NORM_B   "mm.input_norm.bias"
-#define TN_MM_INP_PROJ     "mm.input_projection.weight" // gemma3
-#define TN_MM_SOFT_EMB_N   "mm.soft_emb_norm.weight"    // gemma3
-#define TN_MM_PROJECTOR    "mm.model.fc.%s"             // idefics3, deepseekocr
-#define TN_MM_PATCH_MERGER "mm.patch_merger.%s"         // mistral small 3.1, glm4v
-#define TN_MM_MERGER_FC1   "mm.merger.fc1.%s"            // minimax-m3 patch-merge MLP
-#define TN_MM_MERGER_FC2   "mm.merger.fc2.%s"
-#define TN_TOK_IMG_BREAK   "v.token_embd.img_break"     // pixtral
-#define TN_TOK_IMG_START   "v.token_embd.img_start"     // deepseek4v
-#define TN_TOK_IMG_END     "v.token_embd.img_end"       // deepseek4v
-#define TN_TOK_IMG_PAD     "v.token_embd.img_pad"       // deepseek4v
-#define TN_TOK_GLM_BOI     "adapter.boi"                // glm-edge (these embeddings are not in text model)
-#define TN_TOK_GLM_EOI     "adapter.eoi"                // glm-edge (these embeddings are not in text model)
 #define TN_DEEPSTACK_NORM  "v.deepstack.%d.norm.%s"     // qwen3vl deepstack
 #define TN_DEEPSTACK_FC1   "v.deepstack.%d.fc1.%s"      // qwen3vl deepstack
 #define TN_DEEPSTACK_FC2   "v.deepstack.%d.fc2.%s"      // qwen3vl deepstack
-
-// mimicpmv
-#define TN_MINICPMV_POS_EMBD_K "resampler.pos_embed_k"
-#define TN_MINICPMV_QUERY      "resampler.query"
-#define TN_MINICPMV_PROJ       "resampler.proj.weight"
-#define TN_MINICPMV_KV_PROJ    "resampler.kv.weight"
-#define TN_MINICPMV_ATTN       "resampler.attn.%s.%s"
-#define TN_MINICPMV_LN         "resampler.ln_%s.%s"
-
-// MiniCPM-V 4.6 ViT merger (window attention + MLP downsample),
-// matching the upstream `vit_merger` module name in transformers.
-#define TN_VIT_MERGER_LN1      "v.vit_merger.ln1.%s"
-#define TN_VIT_MERGER_ATTN_Q   "v.vit_merger.attn_q.%s"
-#define TN_VIT_MERGER_ATTN_K   "v.vit_merger.attn_k.%s"
-#define TN_VIT_MERGER_ATTN_V   "v.vit_merger.attn_v.%s"
-#define TN_VIT_MERGER_ATTN_O   "v.vit_merger.attn_out.%s"
-#define TN_VIT_MERGER_DS_LN    "v.vit_merger.ds_ln.%s"
-#define TN_VIT_MERGER_DS_UP    "v.vit_merger.ds_ffn_up.%s"
-#define TN_VIT_MERGER_DS_DOWN  "v.vit_merger.ds_ffn_down.%s"
-
-#define TN_GLM_ADAPER_CONV      "adapter.conv.%s"
-#define TN_GLM_ADAPTER_LINEAR   "adapter.linear.linear.%s"
-#define TN_GLM_ADAPTER_NORM_1   "adapter.linear.norm1.%s"
-#define TN_GLM_ADAPTER_D_H_2_4H "adapter.linear.dense_h_to_4h.%s"
-#define TN_GLM_ADAPTER_GATE     "adapter.linear.gate.%s"
-#define TN_GLM_ADAPTER_D_4H_2_H "adapter.linear.dense_4h_to_h.%s"
-
-// ultravox
-#define TN_CONV1D       "a.conv1d.%d.%s"
-#define TN_CONV2D       "a.conv2d.%d.%s"
-#define TN_CONV_OUT     "a.conv_out.%s"
-#define TN_MM_AUDIO_MLP "mm.a.mlp.%d.%s"
-#define TN_MM_AUDIO_FC  "mm.a.fc.%s" // fully connected layer
-#define TN_MM_NORM_PRE  "mm.a.norm_pre.%s"
-#define TN_MM_NORM_MID  "mm.a.norm_mid.%s"
-
-// mimo-audio-tokenizer
-#define TN_A_DOWNSAMPLE_CONV "a.downsample.conv.%s"
-#define TN_A_DOWNSAMPLE_NORM "a.downsample.norm.%s"
-#define TN_A_RVQ_CODEBOOK    "a.rvq.codebook.%s"
-// mimo-v2.5: text-side RVQ code embedding ("text codebook")
-#define TN_MM_A_CODE_EMBD    "mm.a.code_embd.%s"
-// mimo-v2.5: LLM-side connector (input_local_transformer)
-#define TN_MM_A_LOCAL_ATTN_Q   "mm.a.local_blk.%d.attn_q.%s"
-#define TN_MM_A_LOCAL_ATTN_K   "mm.a.local_blk.%d.attn_k.%s"
-#define TN_MM_A_LOCAL_ATTN_V   "mm.a.local_blk.%d.attn_v.%s"
-#define TN_MM_A_LOCAL_ATTN_OUT "mm.a.local_blk.%d.attn_out.%s"
-#define TN_MM_A_LOCAL_FFN_GATE "mm.a.local_blk.%d.ffn_gate.%s"
-#define TN_MM_A_LOCAL_FFN_UP   "mm.a.local_blk.%d.ffn_up.%s"
-#define TN_MM_A_LOCAL_FFN_DOWN "mm.a.local_blk.%d.ffn_down.%s"
-#define TN_MM_A_LOCAL_LN1      "mm.a.local_blk.%d.ln1.%s"
-#define TN_MM_A_LOCAL_LN2      "mm.a.local_blk.%d.ln2.%s"
-#define TN_MM_A_LOCAL_NORM     "mm.a.local_norm.%s"
-
-// qwen3tts speaker encoder (ECAPA-TDNN)
-#define TN_A_SE_CONV1  "a.blk.%d.se_conv1.%s"
-#define TN_A_SE_CONV2  "a.blk.%d.se_conv2.%s"
-#define TN_A_CONV_RES2 "a.blk.%d.res2.%d.%s"
-#define TN_A_ASP_ATTN  "a.asp_attn.%s"
-#define TN_A_ASP_TDNN  "a.asp_tdnn.%s"
-
-// qwen3tts code_predictor
-#define TN_A_GEN_CODE_PROJ_IN  "a.gen.code.proj_in.%s"
-#define TN_A_GEN_CODE_EMBD     "a.gen.code.embd.%s"
-#define TN_A_GEN_CODE_HEAD     "a.gen.code.head.%s"
-#define TN_A_GEN_CODE_OUT_EMBD "a.gen.code.out_embd.%s"
-#define TN_A_GEN_CODE_NORM     "a.gen.code.output_norm.%s"
-
-// qwen3tts code2wav (RVQ codes -> raw PCM)
-// pre_transformer layers use the generic TN_ATTN_*/TN_FFN_*/TN_LN_*/TN_LS_* macros, prefix "a.gen.wav.tfm"
-#define TN_A_GEN_WAV_QUANT_FIRST_IN  "a.gen.wav.quant.first.in_proj.%s"
-#define TN_A_GEN_WAV_QUANT_FIRST_OUT "a.gen.wav.quant.first.out_proj.%s"
-#define TN_A_GEN_WAV_QUANT_FIRST_CB  "a.gen.wav.quant.first.codebook.%s"
-#define TN_A_GEN_WAV_QUANT_REST_IN   "a.gen.wav.quant.rest.in_proj.%s"
-#define TN_A_GEN_WAV_QUANT_REST_OUT  "a.gen.wav.quant.rest.out_proj.%s"
-#define TN_A_GEN_WAV_QUANT_REST_CB   "a.gen.wav.quant.rest.codebook.%s"
-#define TN_A_GEN_WAV_PRE_CONV        "a.gen.wav.pre_conv.%s"
-#define TN_A_GEN_WAV_TFM_IN_PROJ     "a.gen.wav.tfm.in_proj.%s"
-#define TN_A_GEN_WAV_TFM_OUT_PROJ    "a.gen.wav.tfm.out_proj.%s"
-#define TN_A_GEN_WAV_TFM_OUT_NORM    "a.gen.wav.tfm.output_norm.%s"
-#define TN_A_GEN_WAV_UP_CONV         "a.gen.wav.up.blk.%d.conv.%s"
-#define TN_A_GEN_WAV_UP_DWCONV       "a.gen.wav.up.blk.%d.dwconv.%s"
-#define TN_A_GEN_WAV_UP_NORM         "a.gen.wav.up.blk.%d.norm.%s"
-#define TN_A_GEN_WAV_UP_PW1          "a.gen.wav.up.blk.%d.pw1.%s"
-#define TN_A_GEN_WAV_UP_PW2          "a.gen.wav.up.blk.%d.pw2.%s"
-#define TN_A_GEN_WAV_UP_GAMMA        "a.gen.wav.up.blk.%d.gamma"
-#define TN_A_GEN_WAV_DAC_ENTRY       "a.gen.wav.dac.entry.%s"
-#define TN_A_GEN_WAV_DAC_SNAKE       "a.gen.wav.dac.blk.%d.snake.%s"
-#define TN_A_GEN_WAV_DAC_CONV        "a.gen.wav.dac.blk.%d.conv.%s"
-#define TN_A_GEN_WAV_DAC_RES_ACT1    "a.gen.wav.dac.blk.%d.res.%d.act1.%s"
-#define TN_A_GEN_WAV_DAC_RES_CONV1   "a.gen.wav.dac.blk.%d.res.%d.conv1.%s"
-#define TN_A_GEN_WAV_DAC_RES_ACT2    "a.gen.wav.dac.blk.%d.res.%d.act2.%s"
-#define TN_A_GEN_WAV_DAC_RES_CONV2   "a.gen.wav.dac.blk.%d.res.%d.conv2.%s"
-#define TN_A_GEN_WAV_DAC_POST_SNAKE  "a.gen.wav.dac.post_snake.%s"
-#define TN_A_GEN_WAV_DAC_POST_CONV   "a.gen.wav.dac.post_conv.%s"
-
-// pocket-tts
-#define TN_A_SEANET_CONV_IN      "a.seanet.conv_in.%s"
-#define TN_A_SEANET_CONV_OUT     "a.seanet.conv_out.%s"
-#define TN_A_SEANET_RES_CONV1    "a.seanet.blk.%d.res_conv1.%s"
-#define TN_A_SEANET_RES_CONV2    "a.seanet.blk.%d.res_conv2.%s"
-#define TN_A_SEANET_SCALE_CONV   "a.seanet.blk.%d.scale_conv.%s"
-#define TN_A_SPEAKER_PROJ        "a.speaker_proj.%s"
-#define TN_A_DOWNSAMPLE_CONV     "a.downsample.conv.%s"
-#define TN_A_GEN_FLOW_INPUT_PROJ "a.gen.flow.input_proj.%s"
-#define TN_A_GEN_FLOW_COND_EMBD  "a.gen.flow.cond_embd.%s"
-#define TN_A_GEN_FLOW_TIME_FREQS "a.gen.flow.time.%d.freqs"
-#define TN_A_GEN_FLOW_TIME_UP    "a.gen.flow.time.%d.up.%s"
-#define TN_A_GEN_FLOW_TIME_DOWN  "a.gen.flow.time.%d.down.%s"
-#define TN_A_GEN_FLOW_TIME_NORM  "a.gen.flow.time.%d.norm"
-#define TN_A_GEN_FLOW_BLK_NORM   "a.gen.flow.blk.%d.norm.%s"
-#define TN_A_GEN_FLOW_BLK_UP     "a.gen.flow.blk.%d.up.%s"
-#define TN_A_GEN_FLOW_BLK_DOWN   "a.gen.flow.blk.%d.down.%s"
-#define TN_A_GEN_FLOW_BLK_ADA    "a.gen.flow.blk.%d.ada.%s"
-#define TN_A_GEN_FLOW_FINAL_ADA  "a.gen.flow.final.ada.%s"
-#define TN_A_GEN_FLOW_FINAL_PROJ "a.gen.flow.final.proj.%s"
-#define TN_A_GEN_OUT_EOS         "a.gen.out_eos.%s"
-#define TN_A_GEN_INPUT_LINEAR    "a.gen.input_linear.%s"
-#define TN_A_GEN_EMB_MEAN        "a.gen.emb_mean"
-#define TN_A_GEN_EMB_STD         "a.gen.emb_std"
-#define TN_A_GEN_WAV_QUANT_OUT   "a.gen.wav.quant_out.%s"
-#define TN_A_GEN_WAV_UPSAMPLE    "a.gen.wav.upsample.%s"
-#define TN_A_GEN_WAV_SEANET_CONV_IN    "a.gen.wav.seanet.conv_in.%s"
-#define TN_A_GEN_WAV_SEANET_CONV_OUT   "a.gen.wav.seanet.conv_out.%s"
-#define TN_A_GEN_WAV_SEANET_RES_CONV1  "a.gen.wav.seanet.blk.%d.res_conv1.%s"
-#define TN_A_GEN_WAV_SEANET_RES_CONV2  "a.gen.wav.seanet.blk.%d.res_conv2.%s"
-#define TN_A_GEN_WAV_SEANET_SCALE_CONV "a.gen.wav.seanet.blk.%d.scale_conv.%s"
-
-// cogvlm
-#define TN_MM_POST_FC_NORM "mm.post_fc_norm.%s"
-#define TN_MM_H_TO_4H      "mm.up.%s"
-#define TN_MM_GATE         "mm.gate.%s"
-#define TN_MM_4H_TO_H      "mm.down.%s"
-#define TN_TOK_BOI         "v.boi"
-#define TN_TOK_EOI         "v.eoi"
-
-// hunyuanvl (shared GGUF tensor names)
-#define TN_MM_PRE_NORM     "mm.pre_norm.%s"
-#define TN_MM_IMG_BEGIN    "mm.image_begin" // note: legacy name, new models should use v.token_embd.*
-#define TN_MM_IMG_END      "mm.image_end"   // note: legacy name, new models should use v.token_embd.*
-
-// deepseek-ocr
-#define TN_SAM_POS_EMBD   "v.sam.pos_embd.%s"
-#define TN_SAM_PATCH_EMBD "v.sam.patch_embd.%s"
-#define TN_SAM_PRE_NORM   "v.sam.blk.%d.pre_ln.%s"
-#define TN_SAM_POST_NORM  "v.sam.blk.%d.post_ln.%s"
-#define TN_SAM_ATTN_POS_H "v.sam.blk.%d.attn.pos_h.%s"
-#define TN_SAM_ATTN_POS_W "v.sam.blk.%d.attn.pos_w.%s"
-#define TN_SAM_ATTN_QKV   "v.sam.blk.%d.attn.qkv.%s"
-#define TN_SAM_ATTN_OUT   "v.sam.blk.%d.attn.out.%s"
-#define TN_SAM_FFN_UP     "v.sam.blk.%d.mlp.lin1.%s"
-#define TN_SAM_FFN_DOWN   "v.sam.blk.%d.mlp.lin2.%s"
-#define TN_SAM_NECK       "v.sam.neck.%d.%s"
-#define TN_SAM_NET        "v.sam.net_%d.%s"
-// deepseek-ocr-2
-#define TN_RESMPL_QUERY  "v.resample_query_%d.%s"
-// (conformer) lfm2
-#define TN_PRE_ENCODE_OUT  "a.pre_encode.out.%s"
-#define TN_FFN_NORM        "%s.blk.%d.ffn_norm.%s"
-#define TN_FFN_NORM_1      "%s.blk.%d.ffn_norm_1.%s"
-#define TN_FFN_UP_1        "%s.blk.%d.ffn_up_1.%s"
-#define TN_FFN_DOWN_1      "%s.blk.%d.ffn_down_1.%s"
-#define TN_POS_BIAS_U      "%s.blk.%d.pos_bias_u"
-#define TN_POS_BIAS_V      "%s.blk.%d.pos_bias_v"
-#define TN_NORM_CONV       "%s.blk.%d.norm_conv.%s"
-#define TN_LINEAR_POS      "%s.blk.%d.linear_pos.%s"
-#define TN_CONV_DW         "%s.blk.%d.conv_dw.%s"
-#define TN_CONV_NORM       "%s.blk.%d.conv_norm.%s"
-#define TN_CONV_PW1        "%s.blk.%d.conv_pw1.%s"
-#define TN_CONV_PW2        "%s.blk.%d.conv_pw2.%s"
-#define TN_INP_PROJ        "a.input_projection.%s"
-#define TN_CTC_OUT         "a.enc_ctc_out.%s"
-#define TN_CTC_OUT_MID     "a.enc_ctc_out_mid.%s"
-#define TN_ATTN_REL_POS_EMB "%s.blk.%d.attn_rel_pos_emb"
-// qformer projector
-#define TN_QF_PROJ_QUERY   "%s.proj_query"
-#define TN_QF_PROJ_NORM    "%s.proj_norm.%s"
-#define TN_QF_PROJ_LINEAR  "%s.proj_linear.%s"
-#define TN_QF_SELF_ATTN_Q  "%s.proj_blk.%d.self_attn_q.%s"
-#define TN_QF_SELF_ATTN_K  "%s.proj_blk.%d.self_attn_k.%s"
-#define TN_QF_SELF_ATTN_V  "%s.proj_blk.%d.self_attn_v.%s"
-#define TN_QF_SELF_ATTN_O  "%s.proj_blk.%d.self_attn_out.%s"
-#define TN_QF_SELF_ATTN_N  "%s.proj_blk.%d.self_attn_norm.%s"
-#define TN_QF_CROSS_ATTN_Q "%s.proj_blk.%d.cross_attn_q.%s"
-#define TN_QF_CROSS_ATTN_K "%s.proj_blk.%d.cross_attn_k.%s"
-#define TN_QF_CROSS_ATTN_V "%s.proj_blk.%d.cross_attn_v.%s"
-#define TN_QF_CROSS_ATTN_O "%s.proj_blk.%d.cross_attn_out.%s"
-#define TN_QF_CROSS_ATTN_N "%s.proj_blk.%d.cross_attn_norm.%s"
-#define TN_QF_FFN_UP       "%s.proj_blk.%d.ffn_up.%s"
-#define TN_QF_FFN_DOWN     "%s.proj_blk.%d.ffn_down.%s"
-#define TN_QF_FFN_NORM     "%s.proj_blk.%d.ffn_norm.%s"
-// multi-projector qformer (bid => projector ID)
-#define TN_MULTI_PROJ_IMG_POS   "v.proj_blk.%d.img_pos"
-#define TN_MULTI_PROJ_QUERY     "%s.proj_blk.%d.query"
-#define TN_MULTI_PROJ_LINEAR    "%s.proj_blk.%d.linear.%s"
-#define TN_MULTI_PROJ_NORM      "%s.proj_blk.%d.norm.%s"
-#define TN_MULTI_PROJ_POST_NORM "%s.proj_blk.%d.post_norm.%s"
-
-// gemma4 audio conformer
-#define TN_A_MM_INP_PROJ     "mm.a.input_projection.%s"
-#define TN_A_MM_SOFT_EMB_N   "mm.a.soft_emb_norm.%s"
-#define TN_A_INP_PROJ        "a.input_projection.%s"
-#define TN_A_CONV1D          "a.conv1d.%d.%s"
-#define TN_A_CONV1D_NORM     "a.conv1d.%d.norm.%s"
-#define TN_A_OUT_PROJ        "a.pre_encode.out.%s"
-#define TN_A_ATTN_PRE_NORM   "%s.blk.%d.attn_pre_norm.%s"
-#define TN_A_ATTN_POST_NORM  "%s.blk.%d.attn_post_norm.%s"
-#define TN_A_ATTN_K_REL      "%s.blk.%d.attn_k_rel.%s"
-#define TN_A_PER_DIM_SCALE   "%s.blk.%d.per_dim_scale.%s"
-#define TN_A_PER_DIM_K_SCALE "%s.blk.%d.per_dim_k_scale.%s"
-#define TN_A_FFN_POST_NORM   "%s.blk.%d.ffn_post_norm.%s"
-#define TN_A_FFN_POST_NORM_1 "%s.blk.%d.ffn_post_norm_1.%s"
-
-// mobilenetv5 (gemma3n) definitions
-#define TN_MNV5_STEM_CONV        "v.conv_stem.conv.weight"
-#define TN_MNV5_STEM_BIAS        "v.conv_stem.conv.bias"
-#define TN_MNV5_STEM_BN          "v.conv_stem.bn.weight"
-
-// Stage 0 Block (Edge Residual)
-#define TN_MNV5_BLK_S0_EXP_W     "v.blk.%d.%d.conv_exp.weight"
-#define TN_MNV5_BLK_S0_BN1_W     "v.blk.%d.%d.bn1.weight"
-#define TN_MNV5_BLK_S0_PWL_W     "v.blk.%d.%d.conv_pwl.weight"
-#define TN_MNV5_BLK_S0_BN2_W     "v.blk.%d.%d.bn2.weight"
-
-// Stage 1+ Block (Universal Inverted Residual)
-#define TN_MNV5_BLK_DW_START_W   "v.blk.%d.%d.dw_start.conv.weight"
-#define TN_MNV5_BLK_DW_START_BN  "v.blk.%d.%d.dw_start.bn.weight"
-#define TN_MNV5_BLK_DW_MID_W     "v.blk.%d.%d.dw_mid.conv.weight"
-#define TN_MNV5_BLK_DW_MID_BN    "v.blk.%d.%d.dw_mid.bn.weight"
-#define TN_MNV5_BLK_PW_EXP_W     "v.blk.%d.%d.pw_exp.conv.weight"
-#define TN_MNV5_BLK_PW_EXP_BN    "v.blk.%d.%d.pw_exp.bn.weight"
-#define TN_MNV5_BLK_PW_PROJ_W    "v.blk.%d.%d.pw_proj.conv.weight"
-#define TN_MNV5_BLK_PW_PROJ_BN   "v.blk.%d.%d.pw_proj.bn.weight"
-#define TN_MNV5_BLK_LAYER_SCALE  "v.blk.%d.%d.layer_scale.gamma"
-
-// Attention Components
-#define TN_MNV5_ATTN_Q_W         "v.blk.%d.%d.attn.query.proj.weight"
-#define TN_MNV5_ATTN_K_W         "v.blk.%d.%d.attn.key.proj.weight"
-#define TN_MNV5_ATTN_V_W         "v.blk.%d.%d.attn.value.proj.weight"
-#define TN_MNV5_ATTN_O_W         "v.blk.%d.%d.attn.output.proj.weight"
-#define TN_MNV5_ATTN_K_DW        "v.blk.%d.%d.attn.key.down_conv.weight"
-#define TN_MNV5_ATTN_K_NORM      "v.blk.%d.%d.attn.key.norm.weight"
-#define TN_MNV5_ATTN_V_DW        "v.blk.%d.%d.attn.value.down_conv.weight"
-#define TN_MNV5_ATTN_V_NORM      "v.blk.%d.%d.attn.value.norm.weight"
-#define TN_MNV5_ATTN_NORM        "v.blk.%d.%d.norm.weight" // Block norm used in attn blocks
-
-// MSFA
-#define TN_MNV5_MSFA_FFN_EXP_W   "v.msfa.ffn.pw_exp.conv.weight"
-#define TN_MNV5_MSFA_FFN_EXP_BN  "v.msfa.ffn.pw_exp.bn.weight"
-#define TN_MNV5_MSFA_FFN_PROJ_W  "v.msfa.ffn.pw_proj.conv.weight"
-#define TN_MNV5_MSFA_FFN_PROJ_BN "v.msfa.ffn.pw_proj.bn.weight"
-#define TN_MNV5_MSFA_NORM        "v.msfa.norm.weight"
-
-// gemma4
-#define TN_STD_BIAS              "v.std_bias"
-#define TN_STD_SCALE             "v.std_scale"
-
-// yasa2
-#define TN_YASA_PATCH_LN_W       "v.patch_ln.weight"
-#define TN_YASA_PATCH_LN_B       "v.patch_ln.bias"
-#define TN_YASA_BACKBONE_LN_W    "v.backbone_ln.weight"
-#define TN_YASA_BACKBONE_LN_B    "v.backbone_ln.bias"
-#define TN_YASA_POS_EMBD         "v.vision_pos_embed"
-#define TN_YASA_STAGE_DOWN_LN    "v.stage.%d.down.ln.%s"
-#define TN_YASA_STAGE_DOWN_CONV  "v.stage.%d.down.conv.%s"
-#define TN_YASA_STAGE_BLK        "v.stage.%d.blk.%d.%s.%s"
-
-// parakeet
-#define TN_MEL_FILTERS           "a.mel_filters"
-#define TN_WINDOW                "a.window"
-#define TN_CONV_NORM_MEAN        "%s.blk.%d.conv_norm_mean"
-#define TN_CONV_NORM_VAR         "%s.blk.%d.conv_norm_var"
 
 // align x to upper multiple of n
 #define CLIP_ALIGN(x, n) ((((x) + (n) - 1) / (n)) * (n))
@@ -442,135 +115,12 @@
 struct clip_ctx;
 
 enum projector_type {
-    PROJECTOR_TYPE_MLP,
-    PROJECTOR_TYPE_MLP_NORM,
-    PROJECTOR_TYPE_LDP,
-    PROJECTOR_TYPE_LDPV2,
-    PROJECTOR_TYPE_MINICPMV,
-    PROJECTOR_TYPE_GLM_EDGE,
-    PROJECTOR_TYPE_QWEN2VL,
     PROJECTOR_TYPE_QWEN3VL,
-    PROJECTOR_TYPE_LING3VL,
-    PROJECTOR_TYPE_STEP3VL,
-    PROJECTOR_TYPE_GEMMA3,
-    PROJECTOR_TYPE_GEMMA3NV,
-    PROJECTOR_TYPE_GEMMA3NA,
-    PROJECTOR_TYPE_GEMMA4V,
-    PROJECTOR_TYPE_GEMMA4A,
-    PROJECTOR_TYPE_GEMMA4UV,
-    PROJECTOR_TYPE_GEMMA4UA,
-    PROJECTOR_TYPE_PHI4,
-    PROJECTOR_TYPE_IDEFICS3,
-    PROJECTOR_TYPE_PIXTRAL,
-    PROJECTOR_TYPE_QWEN25VL,
-    PROJECTOR_TYPE_ULTRAVOX,
-    PROJECTOR_TYPE_INTERNVL,
-    PROJECTOR_TYPE_LLAMA4,
-    PROJECTOR_TYPE_QWEN2A,
-    PROJECTOR_TYPE_QWEN3A,
-    PROJECTOR_TYPE_GLMA,
-    PROJECTOR_TYPE_QWEN25O, // will be replaced by QWEN2A or QWEN25VL depending on clip_ctx
-    PROJECTOR_TYPE_VOXTRAL,
-    PROJECTOR_TYPE_MERALION,
-    PROJECTOR_TYPE_MUSIC_FLAMINGO,
-    PROJECTOR_TYPE_LFM2,
-    PROJECTOR_TYPE_KIMIVL,
-    PROJECTOR_TYPE_PADDLEOCR,
-    PROJECTOR_TYPE_LIGHTONOCR,
-    PROJECTOR_TYPE_COGVLM,
-    PROJECTOR_TYPE_JANUS_PRO,
-    PROJECTOR_TYPE_DOTS_OCR,
-    PROJECTOR_TYPE_DOTS3NOTE_V,
-    PROJECTOR_TYPE_DOTS3NOTE_A,
-    PROJECTOR_TYPE_DEEPSEEKOCR,
-    PROJECTOR_TYPE_DEEPSEEKOCR2,
-    PROJECTOR_TYPE_DEEPSEEK4V,
-    PROJECTOR_TYPE_LFM2A,
-    PROJECTOR_TYPE_GLM4V,
-    PROJECTOR_TYPE_YOUTUVL,
-    PROJECTOR_TYPE_YASA2,
-    PROJECTOR_TYPE_KIMIK25,
-    PROJECTOR_TYPE_NEMOTRON_V2_VL,
-    PROJECTOR_TYPE_HUNYUANVL,
-    PROJECTOR_TYPE_PARAKEET,
-    PROJECTOR_TYPE_EXAONE4_5,
-    PROJECTOR_TYPE_MINICPMV4_6,
-    PROJECTOR_TYPE_GRANITE_SPEECH,
-    PROJECTOR_TYPE_MIMOVL,
-    PROJECTOR_TYPE_MINIMAX_M3,
-    PROJECTOR_TYPE_GRANITE4_VISION,
-    PROJECTOR_TYPE_MIMO_AUDIO,
-    PROJECTOR_TYPE_QWEN3TTS_SPKENC,
-    PROJECTOR_TYPE_QWEN3TTS_GEN,
-    PROJECTOR_TYPE_POCKETTTS_SPKENC,
-    PROJECTOR_TYPE_POCKETTTS_GEN,
-    PROJECTOR_TYPE_MUSE_GLIMMER,
     PROJECTOR_TYPE_UNKNOWN,
 };
 
 static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
-    { PROJECTOR_TYPE_MLP,               "mlp" },
-    { PROJECTOR_TYPE_LDP,               "ldp" },
-    { PROJECTOR_TYPE_LDPV2,             "ldpv2"},
-    { PROJECTOR_TYPE_MINICPMV,          "resampler"},
-    { PROJECTOR_TYPE_GLM_EDGE,          "adapter"},
-    { PROJECTOR_TYPE_QWEN2VL,           "qwen2vl_merger"},
-    { PROJECTOR_TYPE_QWEN25VL,          "qwen2.5vl_merger"},
     { PROJECTOR_TYPE_QWEN3VL,           "qwen3vl_merger"},
-    { PROJECTOR_TYPE_LING3VL,           "ling3vl"},
-    { PROJECTOR_TYPE_STEP3VL,           "step3vl"},
-    { PROJECTOR_TYPE_GEMMA3,            "gemma3"},
-    { PROJECTOR_TYPE_GEMMA3NV,          "gemma3nv"},
-    { PROJECTOR_TYPE_GEMMA3NA,          "gemma3na"},
-    { PROJECTOR_TYPE_GEMMA4V,           "gemma4v"},
-    { PROJECTOR_TYPE_GEMMA4A,           "gemma4a"},
-    { PROJECTOR_TYPE_GEMMA4UV,          "gemma4uv"},
-    { PROJECTOR_TYPE_GEMMA4UA,          "gemma4ua"},
-    { PROJECTOR_TYPE_PHI4,              "phi4"},
-    { PROJECTOR_TYPE_IDEFICS3,          "idefics3"},
-    { PROJECTOR_TYPE_PIXTRAL,           "pixtral"},
-    { PROJECTOR_TYPE_ULTRAVOX,          "ultravox"},
-    { PROJECTOR_TYPE_INTERNVL,          "internvl"},
-    { PROJECTOR_TYPE_LLAMA4,            "llama4"},
-    { PROJECTOR_TYPE_QWEN2A,            "qwen2a"},
-    { PROJECTOR_TYPE_QWEN3A,            "qwen3a"},
-    { PROJECTOR_TYPE_GLMA,              "glma"},
-    { PROJECTOR_TYPE_QWEN25O,           "qwen2.5o"},
-    { PROJECTOR_TYPE_VOXTRAL,           "voxtral"},
-    { PROJECTOR_TYPE_MERALION,          "meralion"},
-    { PROJECTOR_TYPE_MUSIC_FLAMINGO,    "musicflamingo"},
-    { PROJECTOR_TYPE_LFM2,              "lfm2"},
-    { PROJECTOR_TYPE_KIMIVL,            "kimivl"},
-    { PROJECTOR_TYPE_PADDLEOCR,         "paddleocr"},
-    { PROJECTOR_TYPE_LIGHTONOCR,        "lightonocr"},
-    { PROJECTOR_TYPE_COGVLM,            "cogvlm"},
-    { PROJECTOR_TYPE_JANUS_PRO,         "janus_pro"},
-    { PROJECTOR_TYPE_DOTS_OCR,          "dots_ocr"},
-    { PROJECTOR_TYPE_DOTS3NOTE_V,       "dots3note_v"},
-    { PROJECTOR_TYPE_DOTS3NOTE_A,       "dots3note_a"},
-    { PROJECTOR_TYPE_DEEPSEEKOCR,       "deepseekocr"},
-    { PROJECTOR_TYPE_DEEPSEEKOCR2,      "deepseekocr2"},
-    { PROJECTOR_TYPE_DEEPSEEK4V,        "deepseek4v"},
-    { PROJECTOR_TYPE_LFM2A,             "lfm2a"},
-    { PROJECTOR_TYPE_GLM4V,             "glm4v"},
-    { PROJECTOR_TYPE_YOUTUVL,           "youtuvl"},
-    { PROJECTOR_TYPE_YASA2,             "yasa2"},
-    { PROJECTOR_TYPE_KIMIK25,           "kimik25"},
-    { PROJECTOR_TYPE_NEMOTRON_V2_VL,    "nemotron_v2_vl"},
-    { PROJECTOR_TYPE_EXAONE4_5,         "exaone4_5"},
-    { PROJECTOR_TYPE_HUNYUANVL,         "hunyuanvl"},
-    { PROJECTOR_TYPE_MINICPMV4_6,       "minicpmv4_6"},
-    { PROJECTOR_TYPE_GRANITE_SPEECH,    "granite_speech"},
-    { PROJECTOR_TYPE_MIMOVL,            "mimovl"},
-    { PROJECTOR_TYPE_MINIMAX_M3,        "minimax_m3"},
-    { PROJECTOR_TYPE_GRANITE4_VISION,   "granite4_vision"},
-    { PROJECTOR_TYPE_MIMO_AUDIO,        "mimo_audio"},
-    { PROJECTOR_TYPE_PARAKEET,          "parakeet"},
-    { PROJECTOR_TYPE_QWEN3TTS_SPKENC,   "qwen3tts_spkenc"},
-    { PROJECTOR_TYPE_QWEN3TTS_GEN,      "qwen3tts_gen"},
-    { PROJECTOR_TYPE_POCKETTTS_SPKENC,  "pockettts_spkenc"},
-    { PROJECTOR_TYPE_POCKETTTS_GEN,     "pockettts_gen"},
-    { PROJECTOR_TYPE_MUSE_GLIMMER,      "muse-glimmer"},
 };
 
 static projector_type clip_projector_type_from_string(const std::string & str) {
@@ -762,41 +312,6 @@ struct clip_image_f32 {
     }
 };
 
-// token area kept after removing the padding added by the anyres resize
-// ref: https://github.com/huggingface/transformers/blob/v5.0.0/src/transformers/models/llava_next/modeling_llava_next.py#L109
-static inline void clip_anyres_unpad(int cur_w, int cur_h, int orig_w, int orig_h,
-                                     int & off_x, int & off_y, int & out_w, int & out_h) {
-    off_x = 0;
-    off_y = 0;
-    out_w = cur_w;
-    out_h = cur_h;
-    if ((float) orig_w / orig_h > (float) cur_w / cur_h) {
-        const int new_h = (int) std::floor((double) orig_h * cur_w / orig_w + 1e-7);
-        off_y = (cur_h - new_h) / 2;
-        out_h = cur_h - 2 * off_y;
-    } else {
-        const int new_w = (int) std::floor((double) orig_w * cur_h / orig_h + 1e-7);
-        off_x = (cur_w - new_w) / 2;
-        out_w = cur_w - 2 * off_x;
-    }
-}
-
-// deepseek4v: layout of the LLM token block built from the aligner grid
-struct dsv4_block_layout {
-    int rows;     // grid rows, padded to an even count
-    int row_len;  // grid width + 1 newline
-    int pad_last; // trailing pads
-    int n_out;    // total block size, including lead pads and the start/end sentinels
-};
-static inline dsv4_block_layout dsv4_get_block_layout(int n_llm_w, int n_llm_h, int lead_pad) {
-    dsv4_block_layout bl;
-    bl.rows     = n_llm_h + (n_llm_h % 2);
-    bl.row_len  = n_llm_w + 1;
-    bl.pad_last = (bl.rows / 2 * bl.row_len) % 2 * 2;
-    bl.n_out    = lead_pad + 1 + bl.rows * bl.row_len + bl.pad_last + 1;
-    return bl;
-}
-
 //
 // logging
 //
@@ -928,20 +443,6 @@ static void string_replace_all(std::string & s, const std::string & search, cons
     s = std::move(builder);
 }
 
-// split string by a `std::string delim` instead of `char delim`
-static std::vector<std::string> string_split_str(std::string s, const std::string & delimiter) {
-    std::vector<std::string> tokens;
-    size_t pos = 0;
-    std::string token;
-    while ((pos = s.find(delimiter)) != std::string::npos) {
-        token = s.substr(0, pos);
-        tokens.push_back(token);
-        s.erase(0, pos + delimiter.length());
-    }
-    tokens.push_back(s);
-    return tokens;
-}
-
 // remove when moving to c++20
 inline bool string_starts_with(std::string_view str, std::string_view prefix) {
     return str.size() >= prefix.size() &&
@@ -1010,70 +511,6 @@ static std::string gguf_kv_to_str(const struct gguf_context * ctx_gguf, int i) {
             }
         default:
             return gguf_data_to_str(type, gguf_get_val_data(ctx_gguf, i), 0);
-    }
-}
-
-//
-// debugging
-//
-
-static void print_tensor_shape(ggml_tensor * t) {
-    printf("%s.shape = [", t->name);
-    for (int i = 0; i < ggml_n_dims(t); ++i) {
-        printf("%" PRId64, t->ne[i]);
-        if (i < ggml_n_dims(t) - 1) {
-            printf(", ");
-        }
-    }
-    printf("]\n");
-}
-
-static void print_tensor_data(ggml_tensor * t, uint8_t * data, int64_t n) {
-    ggml_type type = t->type;
-    int64_t * ne = t->ne;
-    size_t * nb = t->nb;
-    for (int64_t i3 = 0; i3 < ne[3]; i3++) {
-        printf("%s.data: [\n", t->name);
-        for (int64_t i2 = 0; i2 < ne[2]; i2++) {
-            if (i2 == n && ne[2] > 2*n) {
-                printf("     ..., \n");
-                i2 = ne[2] - n;
-            }
-            printf("     [\n");
-            for (int64_t i1 = 0; i1 < ne[1]; i1++) {
-                if (i1 == n && ne[1] > 2*n) {
-                    printf("      ..., \n");
-                    i1 = ne[1] - n;
-                }
-                printf("      [");
-                for (int64_t i0 = 0; i0 < ne[0]; i0++) {
-                    if (i0 == n && ne[0] > 2*n) {
-                        printf("..., ");
-                        i0 = ne[0] - n;
-                    }
-                    size_t i = i3 * nb[3] + i2 * nb[2] + i1 * nb[1] + i0 * nb[0];
-                    float v;
-                    if (type == GGML_TYPE_F16) {
-                        v = ggml_fp16_to_fp32(*(ggml_fp16_t *) &data[i]);
-                    } else if (type == GGML_TYPE_F32) {
-                        v = *(float *) &data[i];
-                    } else if (type == GGML_TYPE_I32) {
-                        v = (float) *(int32_t *) &data[i];
-                    } else if (type == GGML_TYPE_I16) {
-                        v = (float) *(int16_t *) &data[i];
-                    } else if (type == GGML_TYPE_I8) {
-                        v = (float) *(int8_t *) &data[i];
-                    } else {
-                        GGML_ABORT("fatal error");
-                    }
-                    printf("%8.4f", v);
-                    if (i0 < ne[0] - 1) printf(", ");
-                }
-                printf("],\n");
-            }
-            printf("     ],\n");
-        }
-        printf("    ]\n");
     }
 }
 
