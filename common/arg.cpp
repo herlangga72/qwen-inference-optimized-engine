@@ -1066,10 +1066,8 @@ static void common_params_print_completion(common_params_context & ctx_arg) {
         "llama-bench",
         "llama-cli",
         "llama-completion",
-        "llama-convert-llama2c-to-ggml",
         "llama-cvector-generator",
         "llama-debug",
-        "llama-diffusion-cli",
         "llama-embedding",
         "llama-eval-callback",
         "llama-export-lora",
@@ -1104,7 +1102,6 @@ static void common_params_print_completion(common_params_context & ctx_arg) {
         "llama-speculative",
         "llama-speculative-simple",
         "llama-tokenize",
-        "llama-tts",
         "llama-vdot"
     };
 

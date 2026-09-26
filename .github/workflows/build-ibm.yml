@@ -92,14 +92,6 @@ jobs:
           cd build
           ctest -L main --verbose --timeout 900
 
-      - name: Test llama2c (s390x)
-        id: llama2c_test_s390x
-        run: |
-          cd build
-          echo "Fetch llama2c big-endian model"
-          wget https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K-be.gguf
-          ./bin/llama-completion -m stories260K-be.gguf -p "One day, Lily met a Shoggoth" -n 500 -c 256
-
   ubuntu-24-ppc64le:
     runs-on: ubuntu-24.04-ppc64le
 
@@ -143,14 +135,3 @@ jobs:
         run: |
           cd build
           ctest -L main --verbose --timeout 900
-
-      - name: Test llama2c conversion
-        id: llama2c_test
-        run: |
-          cd build
-          echo "Fetch tokenizer"
-          wget https://huggingface.co/karpathy/tinyllamas/resolve/main/stories260K/tok512.bin
-          echo "Fetch llama2c model"
-          wget https://huggingface.co/karpathy/tinyllamas/resolve/main/stories260K/stories260K.bin
-          ./bin/llama-convert-llama2c-to-ggml --copy-vocab-from-model ./tok512.bin --llama2c-model stories260K.bin --llama2c-output-model stories260K.gguf
-          ./bin/llama-completion -m stories260K.gguf -p "One day, Lily met a Shoggoth" -n 500 -c 256

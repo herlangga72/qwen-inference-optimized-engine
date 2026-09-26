@@ -31,10 +31,8 @@
 /docs/backend/snapdragon/               @ggml-org/ggml-hexagon
 /examples/batched.swift/                @ggerganov
 /examples/batched/                      @ggerganov
-/examples/convert-llama2c-to-ggml/      @ggerganov
 /examples/debug/                        @danbev @pwilkin
 /examples/deprecation-warning/          @ggerganov
-/examples/diffusion/                    @am17an
 /examples/embedding/                    @ggerganov
 /examples/eval-callback/                @ggerganov
 /examples/export-docs/                  @ggerganov
@@ -109,7 +107,6 @@
 /tools/server/tests/                    @ggml-org/llama-server
 /tools/ui/                              @ggml-org/llama-ui
 /tools/tokenize/                        @ggerganov
-/tools/tts/                             @ggerganov
 /vendor/                                @ggerganov
 /AUTHORS                                @ggerganov
 /CMakeLists.txt                         @ggerganov
