@@ -8,14 +8,14 @@ from torch import Tensor
 import gguf
 import numpy as np
 
-from .base import ModelBase
+from .base import ModelBase, TextModel
 from .qwen import _LinearAttentionVReorderBase, _Qwen35MRopeMixin
 from .qwen3vl import Qwen3VLVisionModel
 
 
 @ModelBase.register("Qwen4ExpForConditionalGeneration", "Qwen4ExpForCausalLM")
 @ModelBase.example("Qwen/Qwen3.8-Flash-Next")
-class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
+class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase, TextModel):
     """Qwen3.8-Flash-Next.
 
     Shares the Qwen3.5 gated delta net and interleaved mrope, and adds three things:

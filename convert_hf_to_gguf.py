@@ -22,8 +22,6 @@ from conversion import (
     get_model_class,
     logger,
     print_registered_models,
-    _mistral_common_installed,
-    _mistral_import_error_msg,
 )
 
 
@@ -118,29 +116,13 @@ def parse_args() -> argparse.Namespace:
         help="Export multimodal projector (mmproj) for vision models. This will only work on some vision models. An 'mmproj-' prefix will be added to the output file name.",
     )
     parser.add_argument(
+        "--no-nextn", "--no-mtp", dest="no_mtp", action="store_true",
+        help="Exclude NextN speculative draft tensors from the converted GGUF. Pair with --mtp on a second run to publish target and draft as two files.",
+    )
+    parser.add_argument(
         "--mtp", action="store_true",
         help="Export only the multi-token prediction (MTP) head as a separate GGUF, suitable for use as a speculative draft. An 'mtp-' prefix will be added to the output file name.",
     )
-    parser.add_argument(
-        "--no-nextn", "--no-mtp", dest="no_mtp", action="store_true",
-        help="Exclude NextN speculative draft tensors from the converted GGUF. Pair with --mtp or --dspark on a second run to publish target and draft as two files.",
-    )
-    parser.add_argument(
-        "--dspark", action="store_true",
-        help="Export only the DeepSeek-V4 DSpark draft tensors as a separate GGUF.",
-    )
-    parser.add_argument(
-        "--mistral-format", action="store_true",
-        help="Whether the model is stored following the Mistral format.",
-    )
-    parser.add_argument(
-        "--disable-mistral-community-chat-template", action="store_true",
-        help=(
-            "Whether to disable usage of Mistral community chat templates. If set, use the Mistral official `mistral-common` library for tokenization and detokenization of Mistral models. "
-            "Using `mistral-common` ensure correctness and zero-day support of tokenization for models converted from the Mistral format but requires to manually setup the tokenization server."
-        )
-    )
-
     parser.add_argument(
         "--sentence-transformers-dense-modules", action="store_true",
         help=("Whether to include sentence-transformers dense modules. "
@@ -234,44 +216,21 @@ def main() -> None:
 
     logger.info(f"Loading model: {dir_model.name}")
 
-    is_mistral_format = args.mistral_format
-    if is_mistral_format and not _mistral_common_installed:
-        raise ImportError(_mistral_import_error_msg)
-    disable_mistral_community_chat_template = args.disable_mistral_community_chat_template
-
     with torch.inference_mode():
         output_type = ftype_map[args.outtype]
         model_type = ModelType.MMPROJ if args.mmproj else ModelType.TEXT
-        hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
-        if not is_mistral_format:
-            model_architecture = get_model_architecture(hparams, model_type)
-            logger.info(f"Model architecture: {model_architecture}")
-            try:
-                model_class = get_model_class(model_architecture, mmproj=(model_type == ModelType.MMPROJ))
-            except NotImplementedError:
-                logger.error(f"Model {model_architecture} is not supported")
-                sys.exit(1)
-        elif args.mmproj:
-            assert hparams.get("vision_encoder") is not None, "This model does not support multimodal"
-            from conversion.pixtral import PixtralModel
-            model_class = PixtralModel
-        elif hparams.get("moe") is not None:
-            from conversion.mistral import MistralMoeModel
-            model_class = MistralMoeModel
-        else:
-            from conversion.mistral import MistralModel
-            model_class = MistralModel
-
-        if sum((args.mtp, args.no_mtp, args.dspark)) > 1:
-            logger.error("--mtp, --no-nextn, and --dspark are mutually exclusive")
+        hparams = ModelBase.load_hparams(dir_model, False)
+        model_architecture = get_model_architecture(hparams, model_type)
+        logger.info(f"Model architecture: {model_architecture}")
+        try:
+            model_class = get_model_class(model_architecture, mmproj=(model_type == ModelType.MMPROJ))
+        except NotImplementedError:
+            logger.error(f"Model {model_architecture} is not supported")
             sys.exit(1)
 
-        if args.dspark:
-            if is_mistral_format or model_architecture != "DeepseekV4ForCausalLM":
-                logger.error("--dspark is only supported for DeepseekV4ForCausalLM")
-                sys.exit(1)
-            from conversion.deepseek import DeepseekV4DSparkModel
-            model_class = DeepseekV4DSparkModel
+        if sum((args.mtp, args.no_mtp)) > 1:
+            logger.error("--mtp and --no-nextn are mutually exclusive")
+            sys.exit(1)
 
         if args.mtp or args.no_mtp:
             if not model_class.supports_mtp_export:
@@ -289,7 +248,7 @@ def main() -> None:
                                      split_max_tensors=args.split_max_tensors,
                                      split_max_size=split_str_to_n_bytes(args.split_max_size), dry_run=args.dry_run,
                                      small_first_shard=args.no_tensor_first_split,
-                                     remote_hf_model_id=hf_repo_id, disable_mistral_community_chat_template=disable_mistral_community_chat_template,
+                                     remote_hf_model_id=hf_repo_id,
                                      sentence_transformers_dense_modules=args.sentence_transformers_dense_modules,
                                      target_model_dir=Path(args.target_model_dir) if args.target_model_dir else None,
                                      fuse_gate_up_exps=args.fuse_gate_up_exps,

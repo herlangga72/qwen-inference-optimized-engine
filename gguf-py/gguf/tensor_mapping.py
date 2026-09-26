@@ -2761,14 +2761,6 @@ class TensorNameMap:
 
     # architecture-specific block mappings
     arch_block_mappings_cfg: dict[MODEL_ARCH, dict[MODEL_TENSOR, tuple[str, ...]]] = {
-        MODEL_ARCH.ARCTIC: {
-            MODEL_TENSOR.FFN_NORM: (
-                "model.layers.{bid}.residual_layernorm",
-            ),
-            MODEL_TENSOR.FFN_NORM_EXP: (
-                "model.layers.{bid}.post_attention_layernorm",
-            ),
-        },
         MODEL_ARCH.QWEN4EXP: {
             MODEL_TENSOR.HC_ATTN_NORM: (
                 "model.layers.{bid}.attn_hyper_connection.hc_norm",
