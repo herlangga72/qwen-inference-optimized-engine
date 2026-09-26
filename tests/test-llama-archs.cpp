@@ -98,8 +98,8 @@ static void usage(char ** argv) {
     LOG("Examples:\n");
     LOG("  %s\n", argv[0]);
     LOG("  %s -a qwen35moe\n", argv[0]);
-    LOG("  %s -a deepseek4 -o tests/test-models/\n", argv[0]);
-    LOG("  %s -a cohere2moe -v 5\n", argv[0]);
+    LOG("  %s -a qwen4exp -o tests/test-models/\n", argv[0]);
+    LOG("  %s -a qwen35moe -v 5\n", argv[0]);
 }
 
 static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32_t n_vocab, const size_t seed){
@@ -123,57 +123,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     uint32_t n_head  = 2;
     uint32_t n_ff    = 384;
     uint32_t n_layer = 2;
-    if (arch == LLM_ARCH_LLAMA4) {
-        n_layer = 4; // hparams.n_no_rope_layer_step is hard-coded to 4
-    } else if (arch == LLM_ARCH_GEMMA4) {
-        n_embd = 128;
-        n_head = 2;
-        n_ff   = 192;
-        n_layer = 5; // need at least 5 for swa_pattern (every 5th is full_attention)
-    } else if (arch == LLM_ARCH_GEMMA3N) {
-        n_embd = 64;
-        n_head = 1;
-        n_ff   = 96;
-        n_layer = 22; // hparams.n_layer_kv_from_start = 20 is hardcoded
-    } else if (arch == LLM_ARCH_DEEPSEEK4) {
-        // head size 64 so that GPU flash attention kernels support the model
-        n_embd  = 512;
-        n_head  = 8;
-        n_ff    = 1024;
-        n_layer = 4;
-    } else if (arch == LLM_ARCH_STEP35 || arch == LLM_ARCH_LAGUNA) {
-        n_embd = 160; // exercise per-head tensor split granularity with head size 80
-    } else if (arch == LLM_ARCH_QWEN3 || arch == LLM_ARCH_MUSE_GLIMMER || arch == LLM_ARCH_AFMOE) {
-        n_head = 4;
-    } else if (arch == LLM_ARCH_DEEPSEEK2
-            || arch == LLM_ARCH_DEEPSEEK32
-            || arch == LLM_ARCH_GLM_DSA
-            || arch == LLM_ARCH_DOTS3NOTE
-            || arch == LLM_ARCH_KIMI_LINEAR
-            || arch == LLM_ARCH_BAILINGMOE3
-            || arch == LLM_ARCH_KIMI_K3
-            || arch == LLM_ARCH_MISTRAL4
-            || arch == LLM_ARCH_HY_V4) {
-        n_embd = 128;
-        n_head = 1;
-        n_ff   = 192;
-    } else if (arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE) {
-        n_layer = 3;
-    } else if (arch == LLM_ARCH_CHAMELEON) {
-        n_vocab = 10240;
-    } else if (arch == LLM_ARCH_QWEN3TTS) {
-        //n_vocab = 4096; // must be >= the hard-coded codec head size (3072)
-        n_vocab = 3072; // TODO: should be 4096, but user code cannot get `n_vocab_out` yet [TAG_LLAMA_N_VOCAB_OUT]
-    } else if (arch == LLM_ARCH_HRM_TEXT) {
-        n_layer = 8; // 1 layer per stack x 2 h-cycles x (3 l-cycles + 1) cache slots
-    }
-
-    uint32_t n_head_kv = n_head;
-    if (arch == LLM_ARCH_QWEN3) {
-        n_head_kv = 1; // MQA coverage
-    } else if (arch == LLM_ARCH_MUSE_GLIMMER || arch == LLM_ARCH_AFMOE) {
-        n_head_kv = 2; // GQA coverage
-    }
+    const uint32_t n_head_kv = n_head;
     const uint32_t n_embd_head = n_embd / n_head;
 
     ms.add_kv(LLM_KV_GENERAL_ARCHITECTURE,      llm_arch_name(arch));
@@ -184,16 +134,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     ms.add_kv(LLM_KV_BLOCK_COUNT,               n_layer);
     ms.add_kv(LLM_KV_LEADING_DENSE_BLOCK_COUNT, uint32_t(1));
 
-    if (arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE) {
-        std::vector<uint32_t> n_ff_per_layer;
-        n_ff_per_layer.reserve(n_layer);
-        for (uint32_t il = 0; il < n_layer; il++) {
-            n_ff_per_layer.push_back(il <= 1 ? 0 : n_ff);
-        }
-        ms.add_kv(LLM_KV_FEED_FORWARD_LENGTH, n_ff_per_layer);
-    } else {
-        ms.add_kv(LLM_KV_FEED_FORWARD_LENGTH, n_ff);
-    }
+    ms.add_kv(LLM_KV_FEED_FORWARD_LENGTH, n_ff);
 
     ms.add_kv(LLM_KV_USE_PARALLEL_RESIDUAL,   false);
     ms.add_kv(LLM_KV_LOGIT_SCALE,             1.0f);
@@ -201,94 +142,23 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     ms.add_kv(LLM_KV_TIME_DECAY_EXTRA_DIM,    uint32_t(128));
     ms.add_kv(LLM_KV_FULL_ATTENTION_INTERVAL, uint32_t(2));
 
-    if (arch == LLM_ARCH_PLAMO2 || arch == LLM_ARCH_JAMBA || arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE ||
-            arch == LLM_ARCH_GRANITE_HYBRID || arch == LLM_ARCH_LFM2 || arch == LLM_ARCH_LFM2MOE || arch == LLM_ARCH_KIMI_LINEAR ||
-            arch == LLM_ARCH_BAILINGMOE3 || arch == LLM_ARCH_KIMI_K3) {
-        GGML_ASSERT(n_layer >= 2);
-        std::vector<uint32_t> n_head_per_layer;
-        n_head_per_layer.reserve(n_layer);
-        for (uint32_t il = 0; il < n_layer; il++) {
-            n_head_per_layer.push_back(il == 1 ? 0 : n_head);
-        }
-        ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT, n_head_per_layer);
-        ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT_KV, n_head_per_layer);
-    } else {
-        ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT, n_head);
-        ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT_KV, arch == LLM_ARCH_DEEPSEEK4 ? uint32_t(1) : n_head_kv);
-    }
+    ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT, n_head);
+    ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT_KV, n_head_kv);
 
     ms.add_kv(LLM_KV_ATTENTION_MAX_ALIBI_BIAS, 8.0f);
-    if (arch == LLM_ARCH_DEEPSEEK4) {
-        ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH,   n_embd_head);
-        ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH, n_embd_head);
-        ms.add_kv(LLM_KV_ROPE_DIMENSION_COUNT,   n_embd_head/2);
-    } else if (arch == LLM_ARCH_DEEPSEEK2
-            || arch == LLM_ARCH_DEEPSEEK32
-            || arch == LLM_ARCH_GLM_DSA
-            || arch == LLM_ARCH_DOTS3NOTE
-            || arch == LLM_ARCH_KIMI_LINEAR
-            || arch == LLM_ARCH_BAILINGMOE3
-            || arch == LLM_ARCH_KIMI_K3
-            || arch == LLM_ARCH_MISTRAL4
-            || arch == LLM_ARCH_HY_V4) {
-        ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH,       uint32_t(576));
-        ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH,     uint32_t(512));
-        ms.add_kv(LLM_KV_ROPE_DIMENSION_COUNT,       uint32_t(64));
-        ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH_MLA,   uint32_t(192));
-        ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH_MLA, uint32_t(128));
-        if (arch == LLM_ARCH_DOTS3NOTE) {
-            // SWA layers reuse the same MLA geometry as the full layers in this fixture
-            ms.add_kv(LLM_KV_ATTENTION_KV_LORA_RANK_SWA,     uint32_t(512));
-            ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH_SWA,       uint32_t(576));
-            ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH_SWA,     uint32_t(512));
-            ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH_MLA_SWA,   uint32_t(192));
-            ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH_MLA_SWA, uint32_t(128));
-            ms.add_kv(LLM_KV_ROPE_FREQ_BASE_SWA,             10000.0f);
-            // indexer on the full-attention layers (inverse of the swa pattern)
-            std::vector<uint32_t> indexer_types;
-            indexer_types.reserve(n_layer);
-            for (uint32_t il = 0; il < n_layer; il++) {
-                indexer_types.push_back(il % 2 ? 0 : 1);
-            }
-            ms.add_kv(LLM_KV_ATTENTION_INDEXER_TYPES, indexer_types);
-        }
-    } else if (arch == LLM_ARCH_MINIMAX_M3) {
-        // partial rotary: n_rot must not exceed the indexer key length (64)
-        ms.add_kv(LLM_KV_ROPE_DIMENSION_COUNT,       uint32_t(64));
-    }
     ms.add_kv(LLM_KV_ATTENTION_CLAMP_KQV,              1.0f);
     ms.add_kv(LLM_KV_ATTENTION_LAYERNORM_EPS,          1e-5f);
     ms.add_kv(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,      1e-5f);
     ms.add_kv(LLM_KV_ATTENTION_GROUPNORM_EPS,          1e-5f);
     ms.add_kv(LLM_KV_ATTENTION_GROUPNORM_GROUPS,       uint32_t(8));
-    ms.add_kv(LLM_KV_ATTENTION_Q_LORA_RANK,            arch == LLM_ARCH_DEEPSEEK4 ? uint32_t(64) : uint32_t(512));
+    ms.add_kv(LLM_KV_ATTENTION_Q_LORA_RANK,            uint32_t(512));
     ms.add_kv(LLM_KV_ATTENTION_KV_LORA_RANK,           uint32_t(512));
     ms.add_kv(LLM_KV_ATTENTION_RELATIVE_BUCKETS_COUNT, uint32_t(8));
     ms.add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW,         n_ctx/8);
 
-    if (arch == LLM_ARCH_GEMMA4) {
-        ms.add_kv(LLM_KV_EMBEDDING_LENGTH_PER_LAYER,      n_embd/2);
-        ms.add_kv(LLM_KV_ATTENTION_SHARED_KV_LAYERS,      uint32_t(0));
-        ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH_SWA,        n_embd_head);
-        ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH_SWA,      n_embd_head);
-        ms.add_kv(LLM_KV_ROPE_FREQ_BASE_SWA,              10000.0f);
-        // SWA pattern: every 5th layer is full attention (matches E2B layer_types)
-        ms.add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, uint32_t(5));
-    } else if (arch == LLM_ARCH_COHERE2MOE || arch == LLM_ARCH_MIMO2 || arch == LLM_ARCH_STEP35 || arch == LLM_ARCH_SPARK2_5 ||
-            arch == LLM_ARCH_MUSE_GLIMMER || arch == LLM_ARCH_GRANITE_SWA || arch == LLM_ARCH_DOTS3NOTE ||
-            arch == LLM_ARCH_MAPLE) {
-        std::vector<uint32_t> pattern;
-        pattern.reserve(n_layer);
-        for (uint32_t il = 0; il < n_layer; il++) {
-            pattern.push_back(il % 2);
-        }
-        ms.add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, pattern);
-    } else {
-        ms.add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, uint32_t(2));
-    }
+    ms.add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, uint32_t(2));
 
-    // MSA requires one indexer head per GQA (KV) head, unlike the DSA archs where the
-    // indexer head count is independent of the main attention head count.
+    // MSA requires one indexer head per GQA (KV) head.
     if (arch == LLM_ARCH_QWEN4EXP) {
         ms.add_kv(LLM_KV_HYPER_CONNECTION_COUNT,    uint32_t(4));
         ms.add_kv(LLM_KV_HYPER_CONNECTION_LOW_RANK, uint32_t(8));
@@ -320,8 +190,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         ms.add_kv(LLM_KV_PLE_HEAD_VOCAB_SIZES,        ple_head_vocab_sizes);
     }
 
-    // minimax-m3 keeps one indexer head per GQA head; the rest use a fixed 64 to match the fused
-    ms.add_kv(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,   arch == LLM_ARCH_MINIMAX_M3 ? n_head : uint32_t(64));
+    // fixed at 64 to match the fused indexer attention
+    ms.add_kv(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,   uint32_t(64));
     // qwen4exp ropes indexer keys with the main rotary width, so its head can't be < n_rot
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,
               arch == LLM_ARCH_QWEN4EXP ? n_embd_head : uint32_t(128));
@@ -333,54 +203,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
 
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE,   uint32_t(4));
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_LOCAL_BLOCKS, uint32_t(1));
-    // mrope sections count rope pairs; Ling 3.0 VL files carry [t, h, w] sections
-    // summing to n_rot / 2 (n_rot is 64 in this fixture)
-    if (arch == LLM_ARCH_BAILINGMOE3) {
-        ms.add_kv(LLM_KV_ROPE_DIMENSION_SECTIONS, std::vector<uint32_t>({8, 12, 12, 0}));
-    } else {
-        ms.add_kv(LLM_KV_ROPE_DIMENSION_SECTIONS, std::vector<uint32_t>({n_embd_head/4, n_embd_head/4, n_embd_head/4, n_embd_head/4}));
-    }
-
-    if (arch == LLM_ARCH_HY_V4) {
-        ms.add_kv(LLM_KV_HYPER_CONNECTION_COUNT,     uint32_t(4));
-        ms.add_kv(LLM_KV_HYPER_CONNECTION_EPSILON,   1.0e-6f);
-        ms.add_kv(LLM_KV_HYPER_CONNECTION_MAGNITUDE, 2.0f);
-        ms.add_kv(LLM_KV_SWIGLU_CLAMP_EXP,           10.0f);
-        ms.add_kv(LLM_KV_EXPERT_WEIGHTS_SCALE,       1.0f);
-        ms.add_kv(LLM_KV_EXPERT_WEIGHTS_NORM,        true);
-        // layer 0 must own an indexer, the odd layers share it
-        std::vector<uint32_t> indexer_types;
-        indexer_types.reserve(n_layer);
-        for (uint32_t il = 0; il < n_layer; il++) {
-            indexer_types.push_back(il % 2 ? 0 : 1);
-        }
-        ms.add_kv(LLM_KV_ATTENTION_INDEXER_TYPES, indexer_types);
-    }
-
-    if (arch == LLM_ARCH_DEEPSEEK4) {
-        ms.add_kv(LLM_KV_ATTENTION_OUTPUT_GROUP_COUNT,          uint32_t(8));
-        ms.add_kv(LLM_KV_ATTENTION_OUTPUT_LORA_RANK,            uint32_t(32));
-        ms.add_kv(LLM_KV_ATTENTION_COMPRESS_RATIOS,             std::vector<uint32_t>({0, 0, 4, 128}));
-        ms.add_kv(LLM_KV_ATTENTION_COMPRESS_ROPE_FREQ_BASE,     160000.0f);
-        ms.add_kv(LLM_KV_HYPER_CONNECTION_COUNT,                uint32_t(4));
-        ms.add_kv(LLM_KV_HYPER_CONNECTION_SINKHORN_ITERATIONS,  uint32_t(2));
-        ms.add_kv(LLM_KV_HYPER_CONNECTION_EPSILON,              1.0e-6f);
-        ms.add_kv(LLM_KV_HASH_LAYER_COUNT,                      uint32_t(0));
-        ms.add_kv(LLM_KV_SWIGLU_CLAMP_EXP,                      10.0f);
-        ms.add_kv(LLM_KV_EXPERT_WEIGHTS_SCALE,                  1.0f);
-        ms.add_kv(LLM_KV_EXPERT_WEIGHTS_NORM,                   true);
-    }
-
-    if (arch == LLM_ARCH_HRM_TEXT) {
-        // 8 cache slots alias 2 physical blocks: 1 low-stack layer + 1 high-stack layer
-        ms.add_kv(LLM_KV_HRM_LAYERS_PER_STACK, uint32_t(1));
-        ms.add_kv(LLM_KV_HRM_H_CYCLES,         uint32_t(2));
-        ms.add_kv(LLM_KV_HRM_L_CYCLES,         uint32_t(3));
-    }
-
-    if (arch == LLM_ARCH_MAPLE) {
-        ms.add_kv(LLM_KV_SWIGLU_CLAMP_EXP, 7.0f);
-    }
+    // mrope sections count rope pairs, 4 sections covering the full rotary width
+    ms.add_kv(LLM_KV_ROPE_DIMENSION_SECTIONS, std::vector<uint32_t>({n_embd_head/4, n_embd_head/4, n_embd_head/4, n_embd_head/4}));
 
     // dummy tokenizer: token ids are derived from fixed-size chunks and detokenized as hex ids
     {
@@ -406,7 +230,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         ms.add_kv(LLM_KV_EXPERT_COUNT,               uint32_t(2));
         ms.add_kv(LLM_KV_EXPERT_USED_COUNT,          uint32_t(2));
         ms.add_kv(LLM_KV_EXPERT_SHARED_COUNT,        uint32_t(1));
-        ms.add_kv(LLM_KV_EXPERT_GATING_FUNC,         arch == LLM_ARCH_DEEPSEEK4 ? uint32_t(4) : uint32_t(2)); // sqrtsoftplus : sigmoid
+        ms.add_kv(LLM_KV_EXPERT_GATING_FUNC,         uint32_t(2));
         ms.add_kv(LLM_KV_EXPERT_GROUP_SCALE,         1.0f);
         ms.add_kv(LLM_KV_EXPERTS_PER_GROUP,          uint32_t(1));
     }
@@ -419,18 +243,14 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     ms.add_kv(LLM_KV_XIELU_ALPHA_P,             1.0f);
     ms.add_kv(LLM_KV_XIELU_BETA,                1.0f);
     ms.add_kv(LLM_KV_XIELU_EPS,                 1.0e-7f);
-    ms.add_kv(LLM_KV_SSM_INNER_SIZE,            arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_QWEN4EXP ? 256 : 2*n_embd);
+    ms.add_kv(LLM_KV_SSM_INNER_SIZE,            uint32_t(256));
     ms.add_kv(LLM_KV_SSM_CONV_KERNEL,           uint32_t(4));
     ms.add_kv(LLM_KV_SSM_STATE_SIZE,            uint32_t(128));
     ms.add_kv(LLM_KV_SSM_TIME_STEP_RANK,        n_head);
-    ms.add_kv(LLM_KV_SSM_GROUP_COUNT,           arch == LLM_ARCH_PLAMO2 ? 0 : uint32_t(2));
+    ms.add_kv(LLM_KV_SSM_GROUP_COUNT,           uint32_t(2));
     ms.add_kv(LLM_KV_KDA_HEAD_DIM,              uint32_t(128));
     ms.add_kv(LLM_KV_KDA_SAFE_GATE,             true);
     ms.add_kv(LLM_KV_KDA_GATE_LOWER_BOUND,      -5.0f);
-    if (arch == LLM_ARCH_BAILINGMOE3) {
-        ms.add_kv(LLM_KV_SWIGLU_CLAMP_EXP,   std::vector<float>({0.0f, 4.0f}));
-        ms.add_kv(LLM_KV_SWIGLU_CLAMP_SHEXP, std::vector<float>({0.0f, 5.0f}));
-    }
     ms.add_kv(LLM_KV_WKV_HEAD_SIZE,               n_embd/n_head);
     ms.add_kv(LLM_KV_SHORTCONV_L_CACHE,           uint32_t(3));
     ms.add_kv(LLM_KV_RESIDUAL_SCALE,              3.5565588200778455f);
@@ -462,7 +282,7 @@ static bool silent_model_load_progress(float /*progress*/, void * /*user_data*/)
 static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
         struct gguf_context * gguf_ctx, FILE * file, const size_t seed, const float stdev,
         const std::vector<ggml_backend_dev_t> & devs,
-        const llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER, bool encode = false) {
+        const llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER) {
     GGML_ASSERT((gguf_ctx == nullptr) != (file == nullptr));
     llama_model_params model_params = llama_model_default_params();
     model_params.progress_callback = silent_model_load_progress;
@@ -475,9 +295,7 @@ static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
     ctx_params.n_ctx = 0;
     ctx_params.n_threads = 4;
     ctx_params.n_threads_batch = 4;
-    if (!encode) {
-        ctx_params.n_ubatch = 64;
-    }
+    ctx_params.n_ubatch = 64;
 
     tensor_data_params tensor_params = { seed, stdev };
     llama_model_ptr model(gguf_ctx != nullptr ?
@@ -494,7 +312,7 @@ static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
 }
 
 static std::vector<float> get_logits(
-        llama_model * model, llama_context * lctx, const std::vector<llama_token> & tokens, bool encode = false) {
+        llama_model * model, llama_context * lctx, const std::vector<llama_token> & tokens) {
     const uint32_t n_vocab  = llama_vocab_n_tokens(llama_model_get_vocab(model));
     const uint32_t n_ctx    = llama_n_ctx(lctx);
     const uint32_t n_tokens = tokens.size();
@@ -504,12 +322,6 @@ static std::vector<float> get_logits(
         common_batch_add(batch, tokens[pos], pos, {0}, true);
     }
     batch.n_tokens = n_tokens;
-    if (encode) {
-        if (llama_encode(lctx, batch)) {
-            llama_batch_free(batch);
-            throw std::runtime_error("failed to encode batch");
-        }
-    }
     if (llama_decode(lctx, batch)) {
         llama_batch_free(batch);
         throw std::runtime_error("failed to decode batch");
@@ -529,73 +341,8 @@ static std::vector<float> get_logits(
 
 static bool moe_mandatory(const llm_arch arch) {
     switch (arch) {
-        case LLM_ARCH_LLAMA4:
-        case LLM_ARCH_COHERE2MOE:
-        case LLM_ARCH_GROK:
-        case LLM_ARCH_QWEN2MOE:
-        case LLM_ARCH_QWEN3MOE:
-        case LLM_ARCH_QWEN3NEXT:
-        case LLM_ARCH_QWEN3VLMOE:
         case LLM_ARCH_QWEN35MOE:
         case LLM_ARCH_QWEN4EXP:
-        case LLM_ARCH_PHIMOE:
-        case LLM_ARCH_DBRX:
-        case LLM_ARCH_OLMOE:
-        case LLM_ARCH_ARCTIC:
-        case LLM_ARCH_DEEPSEEK:
-        case LLM_ARCH_DEEPSEEK2:
-        case LLM_ARCH_DEEPSEEK32:
-        case LLM_ARCH_DOTS3NOTE:
-        case LLM_ARCH_DEEPSEEK4:
-        case LLM_ARCH_GLM4_MOE:
-        case LLM_ARCH_GLM_DSA:
-        case LLM_ARCH_EXAONE_MOE:
-        case LLM_ARCH_BAILINGMOE:
-        case LLM_ARCH_BAILINGMOE2:
-        case LLM_ARCH_BAILINGMOE3:
-        case LLM_ARCH_DOTS1:
-        case LLM_ARCH_AFMOE:
-        case LLM_ARCH_ERNIE4_5:
-        case LLM_ARCH_ERNIE4_5_MOE:
-        case LLM_ARCH_HUNYUAN_MOE:
-        case LLM_ARCH_HY_V3:
-        case LLM_ARCH_HY_V4:
-        case LLM_ARCH_OPENAI_MOE:
-        case LLM_ARCH_LFM2MOE:
-        case LLM_ARCH_SMALLTHINKER:
-        case LLM_ARCH_LLADA_MOE:
-        case LLM_ARCH_GROVEMOE:
-        case LLM_ARCH_MINIMAX_01:
-        case LLM_ARCH_MINIMAX_M2:
-        case LLM_ARCH_MINIMAX_M3:
-        case LLM_ARCH_RND1:
-        case LLM_ARCH_PADDLEOCR:
-        case LLM_ARCH_MIMO2:
-        case LLM_ARCH_KIMI_LINEAR:
-        case LLM_ARCH_KIMI_K3:
-        case LLM_ARCH_STEP35:
-        case LLM_ARCH_MISTRAL4:
-        case LLM_ARCH_MELLUM:
-        case LLM_ARCH_LAGUNA:
-        case LLM_ARCH_MAPLE:
-            return true;
-        default:
-            return false;
-    }
-}
-
-static bool moe_implemented(const llm_arch arch) {
-    if (moe_mandatory(arch)) {
-        return true;
-    }
-    switch (arch) {
-        case LLM_ARCH_LLAMA:
-        case LLM_ARCH_REFACT:
-        case LLM_ARCH_MINICPM:
-        case LLM_ARCH_GRANITE:
-        case LLM_ARCH_GRANITE_MOE:
-        case LLM_ARCH_MISTRAL3:
-        case LLM_ARCH_LLAMA_EMBED:
             return true;
         default:
             return false;
@@ -603,52 +350,9 @@ static bool moe_implemented(const llm_arch arch) {
 }
 
 static bool arch_supported(const llm_arch arch) {
-    if (arch == LLM_ARCH_CLIP || arch == LLM_ARCH_GPTJ || arch == LLM_ARCH_UNKNOWN) {
+    if (arch == LLM_ARCH_CLIP || arch == LLM_ARCH_UNKNOWN) {
         return false; // These models don't have usable implementations.
     }
-    if (arch == LLM_ARCH_CHAMELEON) {
-        return false; // Only half-implemented and to be removed in the future.
-    }
-    if (arch == LLM_ARCH_WAVTOKENIZER_DEC) {
-        return false; // FIXME CUDA backend crashes.
-    }
-    if (arch == LLM_ARCH_GEMMA4 || arch == LLM_ARCH_GEMMA4_ASSISTANT) {
-        return false; // FIXME @ngxson
-    }
-    if (arch == LLM_ARCH_GRANITE_SWITCH) {
-        return false; // FIXME adapter fixture
-    }
-    if (arch == LLM_ARCH_LLAMA_EMBED || arch == LLM_ARCH_GEMMA_EMBEDDING || arch == LLM_ARCH_T5ENCODER) {
-        return false; // FIXME Embedding (?) models produce inconsistent results.
-    }
-    if (arch == LLM_ARCH_RWKV6 || arch == LLM_ARCH_RWKV6QWEN2 || arch == LLM_ARCH_RWKV7 || arch == LLM_ARCH_ARWKV7) {
-        return false; // FIXME RWKV models hang indefinitely.
-    }
-    if (arch == LLM_ARCH_BERT || arch == LLM_ARCH_MODERN_BERT || arch == LLM_ARCH_NOMIC_BERT || arch == LLM_ARCH_NOMIC_BERT_MOE ||
-            arch == LLM_ARCH_NEO_BERT || arch == LLM_ARCH_JINA_BERT_V2 || arch == LLM_ARCH_JINA_BERT_V3 || arch == LLM_ARCH_EUROBERT) {
-        return false; // TODO vocab
-    }
-    if (arch == LLM_ARCH_PLM) {
-        return false; // TODO tensor shapes
-    }
-    if (arch == LLM_ARCH_DEEPSEEK2OCR) {
-        return false;
-    }
-    // FIXME: these hit scheduler/view-backed-output issues with WebGPU on CI.
-#ifdef GGML_USE_WEBGPU
-    if (arch == LLM_ARCH_DEEPSEEK32 || arch == LLM_ARCH_GLM_DSA || arch == LLM_ARCH_DOTS3NOTE || arch == LLM_ARCH_QWEN4EXP ||
-            arch == LLM_ARCH_HY_V4) {
-        return false;
-    }
-#endif // GGML_USE_WEBGPU
-
-    // FIXME: jamba produces incorrect output (~0.55 NMSE vs CPU) on the HIP
-    // backend on RDNA3.5 (gfx1151); the SSM kernels need investigation.
-#ifdef GGML_USE_HIP
-    if (arch == LLM_ARCH_JAMBA) {
-        return false;
-    }
-#endif // GGML_USE_HIP
 
     return true;
 }
@@ -683,14 +387,8 @@ static int save_models(const std::string & arch_filter, const size_t seed, const
         if (!arch_matches(arch_filter, arch)) {
             continue;
         }
-        if (arch == LLM_ARCH_GEMMA4 || arch == LLM_ARCH_GEMMA4_ASSISTANT) {
-            continue; // FIXME: ISWA KV cache initialization needs more fixture params
-        }
-        if (arch == LLM_ARCH_EAGLE3 || arch == LLM_ARCH_DFLASH) {
-            continue;
-        }
         for (bool moe : {false, true}) {
-            if (moe && !moe_implemented(arch)) {
+            if (moe && !moe_mandatory(arch)) {
                 continue;
             }
             if (!moe && moe_mandatory(arch)) {
@@ -801,16 +499,9 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
         if (!arch_matches(arch_filter, arch)) {
             continue;
         }
-        if (arch == LLM_ARCH_GEMMA4 || arch == LLM_ARCH_GEMMA4_ASSISTANT) {
-            continue; // FIXME: ISWA KV cache initialization needs more fixture params
-        }
-        if (arch == LLM_ARCH_EAGLE3 || arch == LLM_ARCH_DFLASH) {
-            continue;
-        }
 
-        const bool encode = arch == LLM_ARCH_T5 || arch == LLM_ARCH_DREAM || arch == LLM_ARCH_LLADA || arch == LLM_ARCH_LLADA_MOE || arch == LLM_ARCH_RND1;
         for (bool moe : {false, true}) {
-            if (moe && !moe_implemented(arch)) {
+            if (moe && !moe_mandatory(arch)) {
                 continue;
             }
             if (!moe && moe_mandatory(arch)) {
@@ -818,9 +509,6 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
             }
             const std::string config_name = moe ? "MoE" : "Dense";
             gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe);
-            if (arch == LLM_ARCH_BAILINGMOE3) {
-                GGML_ASSERT(gguf_remove_key(gguf_ctx.get(), "bailingmoe3.kda.safe_gate") >= 0);
-            }
             std::pair<llama_model_ptr, llama_context_ptr> model_and_ctx_cpu;
             std::vector<float> logits_cpu;
             for (device_config & dc : dev_configs) {
@@ -839,13 +527,13 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
                 bool test_ok = true;
                 if (!skip) {
                     if (logits_cpu.empty()) {
-                        model_and_ctx_cpu = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, stdev, {}, LLAMA_SPLIT_MODE_LAYER, encode);
-                        logits_cpu = get_logits(model_and_ctx_cpu.first.get(), model_and_ctx_cpu.second.get(), tokens, encode);
+                        model_and_ctx_cpu = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, stdev, {}, LLAMA_SPLIT_MODE_LAYER);
+                        logits_cpu = get_logits(model_and_ctx_cpu.first.get(), model_and_ctx_cpu.second.get(), tokens);
                     }
                     if (dc.split_mode != LLAMA_SPLIT_MODE_TENSOR || llm_arch_supports_sm_tensor(arch)) {
                         test_executed = true;
-                        model_and_ctx_dev = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, stdev, dc.devs, dc.split_mode, encode);
-                        logits_dev = get_logits(model_and_ctx_dev.first.get(), model_and_ctx_dev.second.get(), tokens, encode);
+                        model_and_ctx_dev = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, stdev, dc.devs, dc.split_mode);
+                        logits_dev = get_logits(model_and_ctx_dev.first.get(), model_and_ctx_dev.second.get(), tokens);
                         const double nmse_val = nmse(logits_cpu, logits_dev);
                         snprintf(nmse_str, sizeof(nmse_str), "(%.2e)", nmse_val);
                         status_nmse = "\033[1;32mOK\033[0m";
@@ -867,9 +555,9 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
                         ms.save(file);
                         rewind(file);
 
-                        auto model_and_ctx_roundtrip = get_model_and_ctx(nullptr, file, seed, stdev, dc.devs, dc.split_mode, encode);
+                        auto model_and_ctx_roundtrip = get_model_and_ctx(nullptr, file, seed, stdev, dc.devs, dc.split_mode);
                         const std::vector<float> logits_roundtrip = get_logits(
-                            model_and_ctx_roundtrip.first.get(), model_and_ctx_roundtrip.second.get(), tokens, encode);
+                            model_and_ctx_roundtrip.first.get(), model_and_ctx_roundtrip.second.get(), tokens);
                         status_roundtrip = "\033[1;32mOK\033[0m";
                         GGML_ASSERT(logits_roundtrip.size() == logits_dev.size());
                         for (size_t i = 0; i < logits_roundtrip.size(); i++) {
