@@ -123,15 +123,26 @@ Two caveats recorded rather than hidden. The `result_output` row in the raw prof
 because the export reserves the prefill graph with every token as an output; a real prefill computes
 one logits row, which the same profile shows at 8 ms, so that row is an artifact of the instrument.
 And the MoE gate and up projections are identical in shape and type, so one profiled row represents
-both.
+both. Both caveats come from the replay being an offline instrument, and the plan's first task replaces
+it with the backend's own `GGML_VK_PERF_LOGGER`, which times each node in place, on the real graph, per
+op name and with FLOPs, so every number in the table above gets re-measured before it is acted on.
+
+One interaction to carry into part 1: the scalar FA tuning reads `device->uma` in its row split rule,
+so turning the unified-memory flag on for this machine can change which FA configuration is selected.
+Flash attention is re-measured after that flag is flipped, not before.
 
 **Workstream A, attention, first.** Two parts:
 
-- **Flash attention.** Sweep the configuration the kernel family already offers on the real shapes:
-  scalar versus dot2 accumulation, split-k on and off, workgroup shape, and subgroup size, which the
-  device defaults to 64 while the shaders assume 32, with `subgroupSizeControl` available to pin
-  either. Fix the selection rule that currently reaches the slow configuration. Target: halve the
-  269 ms, about 5% of the pass.
+- **Flash attention.** The configuration is not chosen by a sweep at run time: `get_fa_tuning_params`
+  picks a path per device, and on this RDNA2 part that is the scalar path, then `get_fa_tuning_params_scalar`
+  computes the block geometry analytically from device properties and shape. For this shape (hsk=hsv=256,
+  512 query rows, 512 context, unified memory) those rules give block_rows 8, block_cols 32, row_split 4,
+  d_split 8, workgroup 256, and no occupancy limiter; the values are read off the source and the plan
+  confirms them by instrumenting rather than trusting the reading. There is no environment override for
+  any of them, so the sweep needs a temporary override, recorded and reverted like the earlier
+  ablations. One discrepancy to check first: the scalar tuner asks for the device's reported subgroup
+  size, 64, whenever rows are at least 4, while `get_subgroup_size` pins every other RDNA2 pipeline to
+  32. Target: halve the 269 ms, about 5% of the pass.
 - **Attention projections.** `attn_qkv`, `attn_q` and `attn_output`, 268 ms together across their
   layers, are plain quantized GEMMs at this batch size. Same tuning question, no new kernel.
 
