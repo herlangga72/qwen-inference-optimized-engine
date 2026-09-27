@@ -1,9 +1,34 @@
 # Session KV store: design
 
 Date: 2026-09-27
-Status: draft
+Status: layer 1 partly built, layers 2 and 3 are design only
 Tree: `qwen-only-backends`
 Layers: 1 (format, this document), 2 (placement), 3 (backend acceleration)
+
+## Status: what exists, and how to read this document
+
+Read this first, because the rest of the document is a design and parts of it are not code yet.
+
+Built and verified:
+
+| piece | note |
+| --- | --- |
+| `llama_io_write_direct` / `llama_io_read_direct` | block framed store I/O through `O_DIRECT`, one reused 4 KB buffer, so host memory stays O(1) in the state |
+| `llama_state_seq_save_file_direct` / `llama_state_seq_load_file_direct` | the park and unpark pair, verified against a never-parked continuation on a fresh context into an empty sequence |
+| per-save generation, verify, rewrite | see "Silent write loss" below. A save either writes an intact file or fails |
+| fault-injection harness | `scripts/research/kvstore/`, a Python model of the format with 88 crash points, plus the C++ and Python cross checks |
+
+Designed in this document but not built:
+
+- the two-file store, `kv.pages` and `kv.status`, with its record log, checkpoint, recovery and
+  compaction. The framing and the direct sink it would sit on are built; the two files are not.
+- the residency arithmetic of layer 2, and the fast paths of layer 3.
+
+Falsified since this document was written, and corrected in place below:
+
+- the claim that the store is a strict superset of `LLAMA_STATE_SEQ` v3, so that
+  `--slot-save-path` and the prompt cache keep working. See "Compatibility".
+- the 512 byte block size, which loses blocks on this volume. See the `kv.status` section.
 
 ## Goal
 
@@ -41,7 +66,9 @@ evict.
 | byte sinks and sources | `llama_io_write_host`, `llama_io_read_host`, `llama_io_write_file`, `llama_io_read_file`, `llama_io_write_device`, `llama_io_read_device` (`src/llama-context.cpp:2537-2854`) |
 | size-only pass | `llama_io_write_dummy` (`src/llama-context.cpp:2537`) |
 | host-RAM session cache | `server_prompt_cache` (`tools/server/server-task.h:597-635`), `--cache-ram`, `--cache-idle-slots` |
-| file form | `LLAMA_STATE_SEQ_MAGIC` / `_VERSION` 3 (`include/llama.h:48-49`), `state_seq_save_file` / `state_seq_load_file` |
+| file form, host buffered | `LLAMA_STATE_SEQ_MAGIC` / `_VERSION` 4 (`include/llama.h:48-49`), `state_seq_save_file` / `state_seq_load_file` |
+| file form, direct | `llama_state_seq_save_file_direct` / `_load_file_direct`, `llama_io_write_direct` / `read_direct` (`src/llama-io.{h,cpp}`) |
+| 3 bit V cache type | `GGML_TYPE_PLANAR3_0` (`ggml/include/ggml.h:433`) |
 | on-device form | `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE` (`include/llama.h:928`) |
 | cell metadata | `llama_kv_cells` (`src/llama-kv-cells.h`) |
 | recurrent state | `llama-memory-recurrent`, `llama-memory-hybrid` |
@@ -63,32 +90,67 @@ Layer 1 is pure bytes and is testable with no model and no GPU. This document sp
 
 ### `kv.status`
 
-Append-only. Written in blocks, because `O_DIRECT` requires 512 byte alignment of both
-offset and length on this filesystem:
+Append-only. Written in 4096 byte blocks, because `O_DIRECT` requires both offset and length
+aligned on this filesystem, and because 4096 is the device's own block size. The second part is
+not a preference. The first version of this spec used 512 byte blocks, which forces the
+filesystem to read and modify a whole 4 KB device block per 512 byte write, and on this volume
+that loses blocks: about ten out of every 112590, on every write. Alignment is satisfied by any
+multiple of 512, so 4096 costs nothing and removes the loss. See
+`docs/research/23-write-path-loses-blocks-results.md`.
 
-    block  := [u32 used][u32 crc32(payload area)][records][zero padding]
+    block  := [u32 used][u32 crc32(payload area)][u32 gen][records][zero padding]
     record := [u32 len][u32 crc32(payload)][payload]
     payload := [u64 epoch][u32 op][op args...]
 
-`used` is the payload byte count in the block. `len` is the payload length of a record.
-Records are batched into blocks and the buffer is reused; one `O_DIRECT` write per record
-costs 93x write amplification, so batching is required.
+`used` is the payload byte count in the block. `len` is the payload length of a record. `gen`
+is the generation of the save that wrote the block, see below. Records are batched into blocks
+and the buffer is reused; one `O_DIRECT` write per record costs 93x write amplification, so
+batching is required.
 
 The block header is not optional. Without it the padding is indistinguishable from a torn
 tail, and a reader stops at the first block boundary: measured at 93 records recovered out of
 2000. With it, readback is byte exact and a torn block is rejected as a unit, losing only the
 records inside that block. Numbers in `docs/research/18-direct-io-framing-results.md`.
 
-A reader that sees a short read, a bad block crc, a length that overruns its block, or a bad
-record `crc32` stops there and treats everything after it as absent. That is the whole
-torn-tail rule. The atomic unit is now a block, so the durability point is a block boundary,
-not a record boundary.
+#### Silent write loss, and why the header carries a generation
 
-One consequence of tearing at block granularity, established by the matrix: a torn write
-whose prefix happens to cover the whole payload area leaves a block that is complete and
-valid. It cannot be told apart from a full write, and it does not need to be, because every
-byte it claims is present. The only observable outcomes are "the block landed" and "the
-block is absent", never a partial block.
+A write can be lost on the way to the device while `pwrite` still reports success. What comes
+back is not zeroes, it is whatever occupied that block before, and for a store file that is
+usually an earlier save of the same file, laid out the same way. Those stale bytes are a
+structurally valid frame with a matching crc.
+
+The crc alone therefore cannot detect this, and this is the failure that matters: with crc
+alone the reader accepts the stale block, the restore reports success, and the session comes
+back holding part of an older state with no error anywhere. It was observed exactly that way, as
+a park whose restore produced a different continuation from a run that never parked, with every
+block passing crc.
+
+The header therefore carries the generation of the save that wrote the block, and the file
+header carries the same value. A block belonging to a different save is rejected on read even
+though it is internally consistent. Zero is never a valid generation.
+
+Two rules follow, and both are required:
+
+1. After a save, read the file back and check every block: `used` in range, crc matching, and
+the generation equal to this save's. One reused block buffer, so the check stays O(1) in host
+memory and never holds the payload resident. If any block is damaged, rewrite the whole file,
+up to three attempts.
+2. If the file cannot be written intact, the save fails and returns 0. It never reports success
+over a file it has not verified.
+
+`fsync` is not used. It does not prevent the loss, and on this volume it makes it worse: with
+`fsync` after the writes, no save completed inside three attempts.
+
+A reader that sees a short read, a bad block crc, a generation from another save, a length that
+overruns its block, or a bad record `crc32` stops there and treats everything after it as
+absent. That is the whole torn-tail rule. The atomic unit is a block, so the durability point is
+a block boundary, not a record boundary.
+
+One consequence of tearing at block granularity, established by the matrix: a torn write whose
+prefix happens to cover the whole payload area leaves a block that is complete and valid. It
+cannot be told apart from a full write, and it does not need to be, because every byte it claims
+is present. The only observable outcomes are "the block landed" and "the block is absent", never
+a partial block.
 
 Ops:
 
@@ -123,10 +185,15 @@ Header, then fixed-size slots:
     slot   := [slot_id][gen][crc32][K block][V block][padding]
 
 One slot is one `(layer, block)` pair, `page_tokens` cells wide. The slot size is padded to a
-multiple of 512 bytes, so a slot write is a whole number of aligned blocks. A logical
-attention block is therefore a column of `n_layer` slots, and the block table maps block
-index to slots. Layout fields carry the planar3 rotation seed when that type is in use, so a
-store cannot be read back with a different rotation.
+multiple of the 4096 byte store block, so a slot write is a whole number of aligned blocks. A
+logical attention block is therefore a column of `n_layer` slots, and the block table maps
+block index to slots. Layout fields carry the planar3 rotation seed when that type is in use,
+so a store cannot be read back with a different rotation.
+
+Gap. The slot carries a crc, but no generation, and the file is not read back after a write.
+So a stale slot that is internally consistent cannot be told from a fresh one, which is the
+failure the status file now handles and this one does not. It matters for the same reason: a
+lost slot write would restore a page of an older session instead of failing.
 
 The root page is stored in `kv.pages` like any other page and is referenced by the
 checkpoint record. That keeps the checkpoint record small and the file count at two.
@@ -204,11 +271,31 @@ in-flight compute for it and speculative state already rolled back
 
 ### Compatibility with `LLAMA_STATE_SEQ` v3
 
-Strict superset. The v3 payload is `n_tokens`, `tokens[]`, per-cell
-`(pos, n_seq_id, ext, seq_ids)`, then `v_trans`, `n_layer`, per-layer K rows, per-layer V
-rows. A single block of a single sequence is exactly that payload restricted to a cell
-range. So v3 remains readable as a degenerate store, and today's `server_prompt_cache` and
-`--slot-save-path` continue to work as the fallback path while the new one lands.
+Tested, and the claim that stood here was wrong. It said the store is a strict superset of v3,
+so that `server_prompt_cache` and `--slot-save-path` keep working against store files. They do
+not. Measured in both directions through the real public API:
+
+| save | load | result |
+| --- | --- | --- |
+| shipping `llama_state_seq_save_file` | shipping loader | ok |
+| direct | direct loader | ok, continuation identical to a run that never parked |
+| shipping | direct loader | returns 0, not loaded |
+| direct | shipping loader | returns 0, not loaded |
+
+The payload stream is the same v3 shape in both cases. The container is not: a store file is
+block framed and carries a generation, a v3 file is neither, so neither loader reads the
+other's file. `LLAMA_STATE_SEQ_VERSION` is now 4, and store files are not readable by a version
+3 reader.
+
+Two ways to close this, and the choice is still open:
+
+- Detect the format on read. Block 0 of a store file is its own header and a v3 file starts
+  with its own magic, so either loader could sniff and dispatch. This is the direction worth
+  having, because it decides whether a user's existing saved slots survive.
+- Or drop the claim, and say plainly that migrating an existing `--slot-save-path` file is a
+  conversion step.
+
+Numbers in `docs/research/24-state-api-compat-results.md`.
 
 ## Residency policy
 
@@ -230,7 +317,9 @@ Two system behaviours break the rule silently, so both must be handled, not assu
 1. **The page cache.** A buffered write to a file lands in the page cache, which is system
    RAM. Measured: a 512 MiB buffered write grew `Cached` by 514 MiB. So all store I/O must
    use `O_DIRECT` with aligned buffers. Measured on this box, that is also the faster path,
-   so the rule costs nothing (see `docs/research/16-disk-tier-results.md`).
+   so the rule costs nothing (see `docs/research/16-disk-tier-results.md`). It does impose one
+   requirement: the block size has to be the device's own 4 KB, because smaller aligned writes
+   lose blocks. See the generation section under layer 1.
 2. **Swap.** This box has 54 GiB of zram swap, which is compressed RAM. Under memory
    pressure any resident page, including a staging buffer, can end up there. Keeping host
    use at O(1) is what prevents it.

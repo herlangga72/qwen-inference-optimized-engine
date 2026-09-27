@@ -1,5 +1,8 @@
 # KV planar3 V cache (plan 2, Vulkan) Implementation Plan
 
+**Outcome: not started.** Checked in the code, not assumed: `planar3` appears under `ggml/src/ggml-cpu/`
+and nowhere under `ggml/src/ggml-vulkan/`, so the Vulkan flash attention path does not consume the
+type yet. There is no results document for this plan. The checkboxes below are genuinely open.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let the Vulkan flash attention path consume a `planar3_0` V cache, then measure the speed premise at 16384 and 32768 depth, where the byte saving actually lands.

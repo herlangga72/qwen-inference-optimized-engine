@@ -1,7 +1,12 @@
 # Delta-net output projection: one weight read per step instead of one per sequence
 
 Date: 2026-09-26
-Status: approved design, not yet implemented
+Status: implemented and measured
+Outcome: built at the three delta net output projections, declaring `final_output` as
+`[value_dim, n_seq_tokens*n_seqs]` instead of 3D. Vulkan token generation with 1 token and 8
+sequences improved 2.2x and Vulkan prefill was unchanged, while CPU token generation fell about
+1.3x and CPU prefill rose about 5%. That is a deliberate CPU-for-Vulkan trade, and it is the wrong
+trade on a CPU-only box. Results in `docs/research/06-ssm-out-fix-results.md`.
 Scope: `src/models/qwen35.cpp`, `src/models/qwen35moe.cpp`, `src/models/qwen4exp.cpp`
 
 ## Context

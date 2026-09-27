@@ -144,6 +144,10 @@ Two things that look similar were kept, because they are not agent configuration
 `tools/ui/src/lib/components/app` is the Svelte component conventions for that directory, and the
 `agentic` names in `tools/ui/src/lib` are the web UI's own features.
 
+What remains, and is left deliberately: nine plan documents under `docs/superpowers/plans/` still open
+with a `For agentic workers:` line from that same workflow, including instructions not to commit or
+push. Those are a record of how the plans were executed, not this project's policy.
+
 `CONTRIBUTING.md` is left in place. It is inherited upstream documentation rather than this project's
 policy, and it is part of the upstream tree.
 

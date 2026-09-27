@@ -1,5 +1,9 @@
 # MTP speculative decoding Implementation Plan
 
+**Outcome: measured, and the sub-project pays.** 1.27x on CPU and 1.36x on Vulkan, single stream,
+against a gate of above about 10%. Measuring it also showed that no separate draft file is needed,
+because the MTP head ships inside the model as its last blocks. Results in
+`docs/research/09-mtp-speculation-results.md`.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Extract the MTP head from the target GGUF into a standalone draft model, get `draft-mtp` speculation running on it, and measure whether it pays; productionize only if it does.

@@ -1,10 +1,17 @@
 # Unified-memory iGPU: zero-copy weights first, then the prefill profile
 
 Date: 2026-09-26
-Status: approved design, not yet implemented
+Status: part 1 falsified on this driver and dropped, part 2 not started
 Scope: part 1, the weight memory path on the Vulkan backend for UMA devices; part 2, a prefill profile and the fused kernel it justifies. Ordered 1 then 2, each with its own plan.
 Device: AMD Radeon 680M (RADV REMBRANDT), Mesa 26.2.2, Vulkan 1.4.354, integrated
 Related: `docs/research/02-gpu-vulkan-recheck.md` (load modes), `docs/research/04-stage5-diagnosis.md` (op costs)
+
+**Outcome of part 1.** This design was approved and then tested, and its premise does not hold here:
+RADV refuses to import a file backed host pointer through `VK_EXT_external_memory_host`, at every
+size, while importing an anonymous pointer on the same device succeeds. Part 1 is therefore dropped
+and the enabling changes were reverted. Everything below is kept as the record of what was designed
+and why it cannot be built on this driver. The measurements are in
+`docs/research/11-uma-zero-copy-findings.md`.
 
 ## Context
 

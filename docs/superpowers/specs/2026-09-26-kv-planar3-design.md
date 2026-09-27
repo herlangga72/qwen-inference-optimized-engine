@@ -1,7 +1,12 @@
 # Asymmetric KV cache with a planar3 V type (RotorQuant), CPU first
 
 Date: 2026-09-26
-Status: approved in scope, not yet implemented
+Status: implemented, CPU path verified, Vulkan path has its own plan
+Outcome: `GGML_TYPE_PLANAR3_0` is in the tree as type 43. The CPU path is built and verified against
+the Rust reference implementation byte for byte, including the packing, the codebook, the Givens
+table and the rotation direction through `ggml_mul_mat`. Results in
+`docs/research/10-kv-planar3-results.md`. The Vulkan path is
+`docs/superpowers/plans/2026-09-26-kv-planar3-vulkan.md`.
 Scope: a new KV-only ggml type, its CPU reference and flash attention support, KV plumbing, and a quality gate. Vulkan is a second plan.
 Reference implementation: `~/ternary-bonsai-inference/src/kvquant.rs` and its `notes/kv-rotorquant-plan.md`
 Related here: `docs/research/03-stage3-stage4.md` (attention and the CPU flash attention regression), `docs/research/04-stage5-diagnosis.md` (per-op costs)

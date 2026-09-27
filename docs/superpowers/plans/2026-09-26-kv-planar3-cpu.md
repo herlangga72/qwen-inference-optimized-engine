@@ -1,5 +1,8 @@
 # KV planar3 V cache (plan 1, CPU) Implementation Plan
 
+**Outcome: done and verified.** `GGML_TYPE_PLANAR3_0` is in the tree as type 43, with the CPU
+quantizer verified byte for byte against the Rust reference. Results in
+`docs/research/10-kv-planar3-results.md`. The checkboxes below were never ticked as the work landed.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a `planar3_0` KV type (per-row norm, fixed Givens rotation, Lloyd-Max codebook, grouped packing) and use it for V with K at `q8_0`, then gate it on measured quality at 2048 and 16384 depth.

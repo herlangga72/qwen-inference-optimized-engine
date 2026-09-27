@@ -1,5 +1,10 @@
 # Tokenizer SIMD and threads Implementation Plan
 
+**Outcome: built, with task 2 done differently than written.** The plan's recipe for task 2, keying
+merge ranks on token ids, cannot work: 8 of the 143 codepoints in the corpus are not a single token in
+this vocabulary. What was built keys the rank table on string views into the vocabulary's own bytes
+and removes the per-lookup allocations, with byte identical output. See
+`docs/research/12-tokenizer-task2-finding.md` and `docs/research/13-tokenizer-task2-results.md`.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Take tokenization from 342k tokens/s (2.9 MB/s) to at least 10M tokens/s on this box while producing byte identical ids.

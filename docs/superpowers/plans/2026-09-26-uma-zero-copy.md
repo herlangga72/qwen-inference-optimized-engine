@@ -1,5 +1,9 @@
 # UMA zero-copy weights (F part 1) Implementation Plan
 
+**Outcome: dropped.** Task 1 was run and its premise fails on this driver: RADV refuses to import a
+file backed host pointer through `VK_EXT_external_memory_host`, at every size, while an anonymous
+pointer on the same device imports fine. Per the plan's own step 6, part 1 was dropped and the
+enabling changes reverted. Findings in `docs/research/11-uma-zero-copy-findings.md`.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Back the model weights with the GGUF's own pages on this UMA iGPU, removing the 13.33 s copy-based load and the second resident copy, without changing inference results.

@@ -1,5 +1,9 @@
 # Delta-net output projection layout: Implementation Plan
 
+**Outcome: done and measured.** Built in `src/models/qwen35.cpp`, `qwen35moe.cpp` and
+`qwen4exp.cpp`. Vulkan token generation with 1 token and 8 sequences 2.2x faster, Vulkan prefill
+unchanged, CPU token generation about 1.3x slower, CPU prefill about 5% faster. The checkboxes below
+were never ticked as the work landed; the results are in `docs/research/06-ssm-out-fix-results.md`.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the delta-net output projection read its weight once per step instead of once per sequence, by declaring the activation as 2D before the matmul.

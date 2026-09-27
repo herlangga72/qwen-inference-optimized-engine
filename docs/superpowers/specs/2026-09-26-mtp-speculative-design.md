@@ -1,7 +1,11 @@
 # MTP speculative decoding: extract the head, measure, productionize if it pays
 
 Date: 2026-09-26
-Status: approved in scope, not yet implemented
+Status: measured, and the measurement says the sub-project pays
+Outcome: 1.27x on CPU and 1.36x on Vulkan, single stream, against a gate of above about 10%.
+Measuring it also falsified the premise that a separate draft file is needed: the MTP head ships
+inside the model as its last blocks, which the tree already classifies through
+`nextn_predict_layers`. Results in `docs/research/09-mtp-speculation-results.md`.
 Scope: a new extraction tool under `scripts/research/`, no engine changes, plus measurement and, conditionally, documentation
 Related: `docs/research/00-baseline-stage1.md` (per-token byte accounting), `docs/research/04-stage5-diagnosis.md` (op level costs)
 

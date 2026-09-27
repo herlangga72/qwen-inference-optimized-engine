@@ -1,5 +1,9 @@
 # Prefill Attention and MoE Implementation Plan
 
+**Outcome: not recorded.** There is no results document for this plan in `docs/research/`, and the
+checkboxes below are all open. Whether any of these changes landed is not known from the docs, and
+this line says so rather than guessing. The two documents that motivate the plan are
+`docs/research/03-stage3-stage4.md` and `docs/research/04-stage5-diagnosis.md`.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement
 > this plan task by task, or superpowers:executing-plans with review checkpoints between tasks. Steps use
 > checkbox syntax for tracking. Do not commit without explicit approval, and never push.

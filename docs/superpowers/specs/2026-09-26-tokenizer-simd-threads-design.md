@@ -1,7 +1,13 @@
 # Tokenizer: SIMD and threaded rebuild
 
 Date: 2026-09-26
-Status: approved design, not yet implemented
+Status: built, with one part of the plan falsified by measurement
+Outcome: the differential harness is done and verified. The plan's task 2 recipe, keying merge ranks
+on token ids, cannot work as written: 8 of the 143 codepoints in the corpus are not a single token in
+this vocabulary, so there is no id to key them on. The built version keeps the rank table over string
+views into the vocabulary's own `merge_strings` and removes the per-lookup allocations instead, with
+byte identical output. See `docs/research/12-tokenizer-task2-finding.md` and
+`docs/research/13-tokenizer-task2-results.md`.
 Scope: `src/llama-vocab.cpp` (the BPE tokenizer internals) and the detokenize path. No change to vocabularies, ids, or the tokenizer's external behaviour.
 Target: at least 30x wall-clock throughput on this box, with byte identical ids.
 

@@ -1,5 +1,10 @@
 # Session KV store Implementation Plan
 
+**Outcome: layer 1 partly built, layers 2 and 3 not started.** Tasks 4 and 5 landed the direct sink
+and the park and unpark pair, verified end to end. Task 2's question was answered the other way: the
+store is not a superset of `LLAMA_STATE_SEQ` v3 at the file level. The two file store of task 1
+(`kv.pages`, `kv.status`) is prototyped in Python only. See the status section of
+`docs/superpowers/specs/2026-09-27-session-kv-store-design.md` and `docs/research/14` through `24`.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let a server park and restore per-session KV state so more sessions can be held than fit in device memory, with a format that is provably correct under crash and compaction, and that is portable to other machines.
@@ -69,19 +74,30 @@ Pass criterion: zero invariant violations across the whole matrix. Record the ma
 
 ### Task 2: Superset compatibility
 
-**Files:**
-- Modify: `scripts/research/kvstore/sim.py` (add a v3 codec)
-- Create: `scripts/research/kvstore/v3_compat.py`
+**Status: not built, and the question it was written for was answered the other way.**
 
-**Interfaces:**
-- Consumes: `LLAMA_STATE_SEQ` v3 layout: `n_tokens`, `tokens[]`, per-cell `(pos, n_seq_id, ext, seq_ids)`, `v_trans`, `n_layer`, per-layer K rows, per-layer V rows.
-- Produces: a proof that a v3 blob is exactly one block of one sequence, byte for byte.
+The task was to prove, in the harness, that a v3 blob is exactly one block of one sequence, byte for
+byte. That is a claim about the payload stream. What got tested instead was the file level, through
+the real public API, and the answer there is no: a file written by the shipping pair cannot be loaded
+by the direct pair, and the reverse fails too, both returning 0. See
+`docs/research/24-state-api-compat-results.md`.
+
+The steps below are left as they were written, unstarted:
 
 - [ ] **Step 1: Encode a v3 blob**
 - [ ] **Step 2: Decode it through the store and re-encode**
 - [ ] **Step 3: Assert byte equality with the original v3 blob**
 
-Pass criterion: round-trip is byte identical for single-layer, multi-layer, `ext` present and absent, and multi-seq cells.
+Nothing here is needed unless the format-detection option in the spec is chosen, and if that happens
+the useful task is a different one: a reader that sniffs block 0 and dispatches to the v3 path, tested
+against a real `--slot-save-path` file. That is the direction that decides whether a user's existing
+saved slots survive, and it is the one worth building. The original pass criterion, byte identical
+round-trip for single-layer, multi-layer, `ext` present and absent, and multi-seq cells, would still
+apply to it.
+
+**Files:**
+- Modify: `scripts/research/kvstore/sim.py` (add a v3 codec)
+- Create: `scripts/research/kvstore/v3_compat.py`
 
 ---
 

@@ -1,7 +1,12 @@
 # Recurrent state copies in the delta-net path: Implementation Design
 
 Date: 2026-09-26
-Status: approved in scope, not yet implemented
+Status: implemented and measured
+Outcome: `build_rs` returns a view of the cache instead of gathering rows when the active rows are
+already contiguous, detected by `state_rows_are_contiguous` in `src/llama-memory-recurrent.cpp`. The
+per-token gather and its write-back are gone, and outputs are byte identical to before, checked
+across CPU and Vulkan and across batch shapes. Results in
+`docs/research/08-recurrent-state-phase1-results.md`.
 Scope: `src/llama-graph.cpp` (`build_rs`), `src/llama-memory-recurrent.cpp`, `src/models/delta-net-base.cpp`, and, for phase 2, the GATED_DELTA_NET op in `ggml` plus its CPU and Vulkan implementations
 Related evidence: `docs/research/04-stage5-diagnosis.md`
 

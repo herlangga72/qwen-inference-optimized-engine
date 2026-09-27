@@ -1,5 +1,9 @@
 # Recurrent state view (phase 1) Implementation Plan
 
+**Outcome: done and measured.** `build_rs` returns a view of the cache when the active rows are
+already contiguous, which removes a per-token gather and its write-back, with byte identical outputs.
+Results in `docs/research/08-recurrent-state-phase1-results.md`. The checkboxes below were never
+ticked as the work landed.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** When the active recurrent state rows are already `[head, head+n_rs)` in order, alias them instead of gathering them into a graph buffer, removing one 2 MB copy per delta-net layer per token.
