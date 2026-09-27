@@ -1,4 +1,63 @@
-# llama.cpp
+# llama.cpp (Qwen-only fork: disk-backed session KV store)
+
+A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) for running Qwen models on machines whose
+GPU has no memory of its own. It adds a layered session KV store that parks idle sessions out of the
+compute arena onto disk and restores them on demand.
+
+Everything outside the KV store is upstream llama.cpp. The measurements behind this work are in
+`docs/research/`, the design is in `docs/superpowers/`, and the harnesses are in
+`scripts/research/kvstore/`.
+
+## Why these changes exist
+
+The development machine is a Ryzen 7 6800H with a Radeon 680M and 27 GiB of memory, and no dedicated
+video memory. The GPU arena and system RAM are the same 27 GiB. A Qwen3.6-35B-A3B at IQ3_XXS takes
+about 13 GiB, which leaves roughly 14 GiB for everything else, including the KV cache of every live
+session.
+
+The shipping prompt cache does not fit in that budget. It keeps the KV of idle slots in host memory,
+so memory used by idle sessions grows with the number of sessions instead of staying flat. On a
+machine with a real GPU and 24 GiB of VRAM that is a reasonable trade. Here it is the constraint.
+
+So the rule this fork is built around is: **resident KV lives in device memory or on disk, never in
+host RAM**. Host memory holds the model, plus one reused I/O staging block. Most of the design
+follows from that, including the use of `O_DIRECT` for the store, and it is why a parked session
+costs 0 KiB of resident memory instead of a few hundred MiB.
+
+The second reason is capacity. Ten sessions at Qwen3.6-35B-A3B's own context of 262144 tokens, with K
+cached `q8_0` and V cached `planar3_0`, is 1.868 GiB per session and 18.68 GiB for ten, against 50.6
+GiB at f16. `scripts/research/kvstore/kv_capacity.py` recomputes that from a GGUF header without
+loading the model. Note that this makes disk the binding constraint, not RAM: the box has 35 GB free.
+
+## What is different
+
+- `llama_io_write_direct` / `llama_io_read_direct`: block framed store I/O through `O_DIRECT`, with
+  one reused aligned buffer, so host memory stays O(1) in the size of the state.
+- `llama_state_seq_save_file_direct` / `llama_state_seq_load_file_direct`: the park and unpark pair.
+- A per-save generation in every frame, and a read-back verify after each save. This class of volume
+  loses writes silently, and a lost write leaves the block holding whatever was there before, which
+  for the store's own path is an earlier save of the same file: a valid frame with a matching crc. So
+  a crc alone cannot detect it and a generation can. A save now either writes an intact file or fails.
+- `planar3_0`, a 3 bit V cache type, and `q8_0` for K, which together cut the KV slope 2.77x against
+  f16 on Qwen3.6-35B-A3B.
+
+## What is measured
+
+- Park a real sequence to disk, restore it, and continue: the continuation is identical to a run that
+  never parked. Isolated RSS delta across park and unpark: 0 KiB on a 55 MiB state.
+- Saves are reproducible and intact: four consecutive runs with no damaged blocks, cross-checked by a
+  Python validator that shares no code with the C++ reader.
+
+## What is not done
+
+- The server level path is not exercised. Two sessions parking and restoring through `llama-server`
+  is the acceptance test, and no in-tree automated test covers it (it needs Python dependencies that
+  did not build here). The public C API is exercised, on a fresh context into an empty sequence.
+- The pages file has no checksum, so it has no way to detect a lost write.
+- Store files written before this work are not readable. The format changed: 4 KB blocks, a 12 byte
+  frame header carrying a generation, and `LLAMA_STATE_SEQ_VERSION` 4.
+
+Upstream build instructions, model support and the REST API are unchanged and still apply below.
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
