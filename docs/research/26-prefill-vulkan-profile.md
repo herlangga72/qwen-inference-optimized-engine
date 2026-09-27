@@ -285,3 +285,53 @@ No code was written for this yet. The dequantize question has a specific answer 
 micro-optimisation: the type is missing from the fast path's type list. Before adding the kernel it is
 worth confirming the attribution on a cheap shape, since three earlier hypotheses in this document were
 wrong, and the `CONCAT` numbering above is already flagged as suspect.
+
+---
+
+## Baseline before the `iq2_s` int dot path
+
+Date: 2026-09-27, same session. Commit `7939ef6b0`. Taken in one session, back to back.
+
+| measurement | value |
+| --- | --- |
+| CPU pp512, `-ngl 0 -t 8` | 97.38 t/s |
+| Vulkan pp512, `-ngl 99 -fa on`, current fp16 path | 231.52 ± 0.42 t/s |
+| `MUL_MAT_ID iq2_s` per call | 9561 to 9794 us, 877 to 898 GFLOPS/s |
+| `MUL_MAT_ID iq2_s` per pass | 78 calls, 746 to 764 ms |
+
+Correctness reference, a 180 word prompt and 8 greedy tokens at seed 1: CPU and Vulkan wrote 938 bytes
+and `diff` reports them identical. That file pair is the check the new kernel has to pass, and it is kept
+at `/home/herlanggays/.jcode/scratch/iq2mmq/`.
+
+Note on how those runs end: `llama-completion` writes its output and then does not exit, so both runs
+report `rc=124` from the timeout despite having produced complete, identical output. That is the tool, not
+the run, and it cost a false alarm here.
+
+## The int dot path for `iq2_s`: design, and the one thing that is not like `IQ3_S`
+
+`IQ3_S` is the template, because it also uses a grid lookup, a sign byte per group of eight, and a four bit
+scale per 32 values. Three functions need an `IQ2_S` arm: `block_a_to_shmem`, `block_a_to_registers`, and
+`mmq_dot_product`. The grid is already compatible:
+
+- `iq2s_grid` is 1024 entries of `uvec2`, 8 bytes, 8 values per entry as magnitudes. The largest magnitude
+  in the table is 43, so the values fit int8 and the sign can be applied with the same branchless
+  `(v ^ m) - m` the `IQ3_S` arm uses. No precision is lost packing them.
+
+The obstacle is the scale. `IQ2_S` carries **two scales inside one 32 value group**:
+
+```c
+        db[0] = d * (0.5f + (x[i].scales[ib32] & 0xf)) * 0.25f;
+        db[1] = d * (0.5f + (x[i].scales[ib32] >>  4)) * 0.25f;
+```
+
+`db[0]` applies to the first two of the four eight-value sub-groups and `db[1]` to the last two, so the 32
+packed int8 values carry two different multipliers. The `IQ3_S` template has one `d` per group and one dot
+product per group, so it cannot be copied as is: the arm needs either a dot product split in two halves
+with a scale each, or a change to how the block scale is carried. That is where a mistake would be silent,
+because both paths would still produce plausible text.
+
+State: **nothing implemented.** The baseline is taken, the semantics are pinned down against
+`dequantize_row_iq2_s` in `ggml/src/ggml-quants.c`, and the remaining work is the three functions, the 8192
+byte LUT in the shared memory budget of `ggml_vk_matmul_int_shmem_support`, the generator entries, and the
+host type list. That is a kernel addition of a few hundred lines with a verification step, and it should be
+done in one sitting rather than half.
