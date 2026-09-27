@@ -769,6 +769,10 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
         cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot);
     }
 
+    if (inp->self_v_rot_inv) {
+        cur = llama_mul_mat_rot(ctx0, cur, inp->self_v_rot_inv);
+    }
+
     return cur;
 }
 

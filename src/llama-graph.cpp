@@ -411,6 +411,10 @@ void llm_graph_input_attn_kv::set_input(const llama_ubatch * ubatch) {
     if (self_v_rot && self_v_rot->buffer) {
         mctx->set_input_v_rot(self_v_rot);
     }
+
+    if (self_v_rot_inv && self_v_rot_inv->buffer) {
+        mctx->set_input_v_rot_inv(self_v_rot_inv);
+    }
 }
 
 bool llm_graph_input_attn_kv::can_reuse(const llm_graph_params & params) {
@@ -484,12 +488,20 @@ void llm_graph_input_attn_kv_iswa::set_input(const llama_ubatch * ubatch) {
         mctx->get_base()->set_input_v_rot(self_v_rot);
     }
 
+    if (self_v_rot_inv && self_v_rot_inv->buffer) {
+        mctx->get_base()->set_input_v_rot_inv(self_v_rot_inv);
+    }
+
     if (self_k_rot_swa && self_k_rot_swa->buffer) {
         mctx->get_swa()->set_input_k_rot(self_k_rot_swa);
     }
 
     if (self_v_rot_swa && self_v_rot_swa->buffer) {
         mctx->get_swa()->set_input_v_rot(self_v_rot_swa);
+    }
+
+    if (self_v_rot_inv_swa && self_v_rot_inv_swa->buffer) {
+        mctx->get_swa()->set_input_v_rot_inv(self_v_rot_inv_swa);
     }
 }
 
@@ -594,9 +606,14 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
         mctx->get_attn()->set_input_v_rot(inp_attn->self_v_rot);
     }
 
+    if (inp_attn->self_v_rot_inv) {
+        mctx->get_attn()->set_input_v_rot_inv(inp_attn->self_v_rot_inv);
+    }
+
     const int64_t n_rs = mctx->get_recr()->get_n_rs();
 
-    if (inp_rs->s_copy) {
+    // s_copy is not read when the state rows are aliased, so it may not be allocated
+    if (inp_rs->s_copy && inp_rs->s_copy->buffer) {
         GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy->buffer));
         int32_t * data = (int32_t *) inp_rs->s_copy->data;
 
@@ -709,6 +726,10 @@ void llm_graph_input_mem_hybrid_iswa::set_input(const llama_ubatch * ubatch) {
         attn_ctx->get_base()->set_input_v_rot(inp_attn->self_v_rot);
     }
 
+    if (inp_attn->self_v_rot_inv) {
+        attn_ctx->get_base()->set_input_v_rot_inv(inp_attn->self_v_rot_inv);
+    }
+
     if (inp_attn->self_k_rot_swa) {
         attn_ctx->get_swa()->set_input_k_rot(inp_attn->self_k_rot_swa);
     }
@@ -717,9 +738,14 @@ void llm_graph_input_mem_hybrid_iswa::set_input(const llama_ubatch * ubatch) {
         attn_ctx->get_swa()->set_input_v_rot(inp_attn->self_v_rot_swa);
     }
 
+    if (inp_attn->self_v_rot_inv_swa) {
+        attn_ctx->get_swa()->set_input_v_rot_inv(inp_attn->self_v_rot_inv_swa);
+    }
+
     const int64_t n_rs = mctx->get_recr()->get_n_rs();
 
-    if (inp_rs->s_copy) {
+    // s_copy is not read when the state rows are aliased, so it may not be allocated
+    if (inp_rs->s_copy && inp_rs->s_copy->buffer) {
         GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy->buffer));
         int32_t * data = (int32_t *) inp_rs->s_copy->data;
 
@@ -2185,6 +2211,7 @@ static std::unique_ptr<llm_graph_input_attn_kv> build_attn_inp_kv_impl(
 
     inp->self_k_rot = mctx_cur->build_input_k_rot(ctx0);
     inp->self_v_rot = mctx_cur->build_input_v_rot(ctx0);
+    inp->self_v_rot_inv = mctx_cur->build_input_v_rot_inv(ctx0);
 
     return inp;
 }
@@ -2250,6 +2277,11 @@ ggml_tensor * llm_graph_context::build_attn(
 
     if (inp->self_v_rot) {
         cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot);
+    }
+
+    if (inp->self_v_rot_inv) {
+        // planar3_0 V is stored rotated, so the weighted sum comes back rotated
+        cur = llama_mul_mat_rot(ctx0, cur, inp->self_v_rot_inv);
     }
 
     if (wo) {
@@ -2358,6 +2390,7 @@ ggml_tensor * llm_graph_context::build_attn(
 
     auto * k_rot = is_swa ? inp->self_k_rot_swa : inp->self_k_rot;
     auto * v_rot = is_swa ? inp->self_v_rot_swa : inp->self_v_rot;
+    auto * v_rot_inv = is_swa ? inp->self_v_rot_inv_swa : inp->self_v_rot_inv;
 
     if (k_rot) {
         q_cur = llama_mul_mat_hadamard(ctx0, q_cur, k_rot);
@@ -2411,6 +2444,11 @@ ggml_tensor * llm_graph_context::build_attn(
 
     if (v_rot) {
         cur = llama_mul_mat_hadamard(ctx0, cur, v_rot);
+    }
+
+    if (v_rot_inv) {
+        // planar3_0 V is stored rotated, so the weighted sum comes back rotated
+        cur = llama_mul_mat_rot(ctx0, cur, v_rot_inv);
     }
 
     if (wo) {
@@ -2523,9 +2561,11 @@ llm_graph_input_attn_kv_iswa * llm_graph_context::build_attn_inp_kv_iswa() const
 
     inp->self_k_rot = mctx_cur->get_base()->build_input_k_rot(ctx0);
     inp->self_v_rot = mctx_cur->get_base()->build_input_v_rot(ctx0);
+    inp->self_v_rot_inv = mctx_cur->get_base()->build_input_v_rot_inv(ctx0);
 
     inp->self_k_rot_swa = mctx_cur->get_swa()->build_input_k_rot(ctx0);
     inp->self_v_rot_swa = mctx_cur->get_swa()->build_input_v_rot(ctx0);
+    inp->self_v_rot_inv_swa = mctx_cur->get_swa()->build_input_v_rot_inv(ctx0);
 
     return (llm_graph_input_attn_kv_iswa *) res->add_input(std::move(inp));
 }
