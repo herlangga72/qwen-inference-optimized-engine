@@ -560,3 +560,38 @@ The narrow tile is a prediction too. It has one advantage over the previous four
 from a measurement of the same kernel at a fuller tile, so the rate it would reach is observed rather than
 modelled. The thing to test first, cheaply, is whether a 16 wide variant changes anything at all, before
 building the full selector wiring.
+
+### A caveat on the label, and a consistency check that holds up
+
+The profiler prints `n` as `node->ne[1]`, which for `MUL_MAT_ID` is `n_expert_used` and is 8 in both runs. It
+is not the column count. Reading it as the column count is what made an earlier draft of this document
+incoherent, and it is the same class of mistake as the others listed above: the label was measured but its
+meaning was assumed. The columns the kernel actually tiles over are the routed pairs, `n_expert_used *
+batch`, divided among the experts.
+
+Read correctly, the two runs give a check that the numbers agree on. Dispatched work means the workgroup
+tiles, including the padding:
+
+| batch | routed pairs | per expert | padded to | dispatched work | dispatched rate |
+| --- | --- | --- | --- | --- | --- |
+| 512 | 4096 | ~16 | 32 | 17.2 GFLOP | 1773 GFLOPS/s |
+| 2048 | 16384 | ~64 | 64 | 34.4 GFLOP | 1638 GFLOPS/s |
+
+The dispatched rate is the same at both batch sizes to within 8 percent. The hardware does the same work per
+second either way, and the only thing that changed is how much of the tile was padding. That is a coincidence
+the padding story predicts and no other story does, and it also removes the alternative reading in which the
+batch 512 case is simply a badly scheduled kernel.
+
+### Two snags found while preparing the change
+
+Neither is fatal, but both mean this is not the one line edit it looked like:
+
+- **`iq2_s` is not in the `mmqid_int_k` family.** That family is `Q2_K` through `Q6_K` plus `IQ3_S`, so the
+  MoE op for this model uses the generic `tc_mmqid` configuration, whose small tile is also `BN` 32. The
+  narrow tile has to be added there, and the two families are selected by different type lists.
+- **The `mmqid` family shares `s_mmq_wg_denoms` with the dense family.** The workgroup count is computed by
+  dividing the problem by these, so the N denom has to equal the N tile, and they cannot be edited in place
+  without disturbing dense matmuls. The narrow tile needs its own denom triple.
+
+Both are the same shape of work the `iq2_s` integer path needed, which is a new pipeline entry plus both
+host lists, rather than a new subsystem.
