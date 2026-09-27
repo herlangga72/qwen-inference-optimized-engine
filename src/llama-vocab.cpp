@@ -16,6 +16,7 @@
 #include <limits>
 #include <queue>
 #include <set>
+#include <string_view>
 #include <unordered_map>
 
 //
@@ -71,7 +72,6 @@ struct llm_bigram_bpe {
     using queue = llama_priority_queue<llm_bigram_bpe, queue_storage, comparator>;
     llm_symbol::index left;
     llm_symbol::index right;
-    std::string text;
     int rank;
     size_t size;
 };
@@ -164,7 +164,7 @@ struct llm_tokenizer_bpe_session {
         int final_prev_index = -1;
 
         // the hand written scanner for qwen35/qwen2 lands in this spot in a later task; until then both
-        // settings take the reference path, so the differential harness compares it with itself
+        // settings take the same path
         const bool use_legacy = llm_tokenizer_use_legacy();
         (void) use_legacy;
 
@@ -210,9 +210,9 @@ struct llm_tokenizer_bpe_session {
                 if (left_symbol.n == 0 || right_symbol.n == 0) {
                     continue;
                 }
-                std::string left_token = std::string(left_symbol.text, left_symbol.n);
-                std::string right_token = std::string(right_symbol.text, right_symbol.n);
-                if (left_token + right_token != bigram.text) {
+                // a symbol keeps its start and only grows by absorbing its right neighbour, so the
+                // pair is unchanged exactly when the two lengths still add up
+                if (left_symbol.n + right_symbol.n != bigram.size) {
                     continue;  // Skip this bigram if it's outdated
                 }
 
@@ -275,12 +275,10 @@ private:
         if (left == -1 || right == -1) {
             return;
         }
-        std::string left_token  = std::string(symbols[left].text,  symbols[left].n);
-        std::string right_token = std::string(symbols[right].text, symbols[right].n);
+        const std::string_view left_token (symbols[left].text,  symbols[left].n);
+        const std::string_view right_token(symbols[right].text, symbols[right].n);
 
-        int rank_found = -1;
-
-        rank_found = vocab.find_bpe_rank(left_token, right_token);
+        const int rank_found = vocab.find_bpe_rank(left_token, right_token);
 
         if (rank_found < 0) {
             return;
@@ -290,7 +288,6 @@ private:
 
         bigram.left  = left;
         bigram.right = right;
-        bigram.text  = left_token + right_token;
         bigram.size  = left_token.size() + right_token.size();
         bigram.rank  = rank_found;
 
@@ -395,12 +392,14 @@ struct llama_vocab::impl {
     std::vector<llama_token> cache_special_tokens;
     std::vector<std::string> cache_token_to_piece; // llama_token_to_piece(special = true);
     struct pair_hash {
-        size_t operator()(const std::pair<std::string, std::string> & p) const {
-            return std::hash<std::string>{}(p.first) ^  //create some hash for pair
-                   (std::hash<std::string>{}(p.second) << 1);
+        size_t operator()(const std::pair<std::string_view, std::string_view> & p) const {
+            return std::hash<std::string_view>{}(p.first) ^  //create some hash for pair
+                   (std::hash<std::string_view>{}(p.second) << 1);
         }
     };
-    std::unordered_map<std::pair<std::string, std::string>, int, pair_hash> bpe_ranks;
+    // the rank table keys are views into merge_strings, which owns the bytes for the life of the vocab
+    std::vector<std::string> merge_strings;
+    std::unordered_map<std::pair<std::string_view, std::string_view>, int, pair_hash> bpe_ranks;
 
     // set of all tokens that cause "end of generation"
     std::set<llama_token> special_eog_ids;
@@ -531,21 +530,27 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                     throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_MERGES).c_str()));
                 }
                 const int n_merges = gguf_get_arr_n(ctx, merges_keyidx);
+                merge_strings.clear();
+                merge_strings.reserve(2*n_merges);
                 for (int i = 0; i < n_merges; i++) {
                     const std::string word = gguf_get_arr_str(ctx, merges_keyidx, i);
                     //GGML_ASSERT(unicode_cpts_from_utf8(word).size() > 0);
 
-                    std::string first;
-                    std::string second;
-
                     const size_t pos = word.find(' ', 1);
 
                     if (pos != std::string::npos) {
-                        first  = word.substr(0, pos);
-                        second = word.substr(pos + 1);
+                        merge_strings.push_back(word.substr(0, pos));
+                        merge_strings.push_back(word.substr(pos + 1));
+                    } else {
+                        merge_strings.emplace_back();
+                        merge_strings.emplace_back();
                     }
-
-                    bpe_ranks.emplace(std::make_pair(first, second), i);
+                }
+                // keys are views into merge_strings, so build the table once the strings are in place
+                for (int i = 0; i < n_merges; i++) {
+                    bpe_ranks.emplace(std::make_pair(
+                            std::string_view(merge_strings[2*i]),
+                            std::string_view(merge_strings[2*i + 1])), i);
                 }
             }
 
@@ -2036,9 +2041,9 @@ int llama_vocab::max_token_len() const {
     return pimpl->max_token_len;
 }
 
-int llama_vocab::find_bpe_rank(const std::string & token_left, const std::string & token_right) const {
-    GGML_ASSERT(token_left.find(' ')   == std::string::npos);
-    GGML_ASSERT(token_right.find(' ')  == std::string::npos);
+int llama_vocab::find_bpe_rank(std::string_view token_left, std::string_view token_right) const {
+    GGML_ASSERT(token_left.find(' ')   == std::string_view::npos);
+    GGML_ASSERT(token_right.find(' ')  == std::string_view::npos);
 
     auto it = pimpl->bpe_ranks.find(std::make_pair(token_left, token_right));
     if (it == pimpl->bpe_ranks.end()) {
@@ -2056,7 +2061,7 @@ std::vector<std::string> llama_vocab::get_bpe_merges() const {
     std::vector<std::string> result(max_rank + 1);
 
     for (const auto & pair : pimpl->bpe_ranks) {
-        result[pair.second] = pair.first.first + " " + pair.first.second;
+        result[pair.second] = std::string(pair.first.first) + " " + std::string(pair.first.second);
     }
 
     return result;
