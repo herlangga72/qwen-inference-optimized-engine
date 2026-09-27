@@ -216,3 +216,72 @@ amortisation, and the concat double load. The one remaining number with headroom
 matmul at 7 GB/s and 124 FLOP per byte, whose bound looks like the `iq2_s` dequantize path. The honest
 next step is not to optimise anything yet but to test the instrument on the two ops it may be
 mis-attributing, because every remaining target except the MoE line depends on those numbers.
+
+---
+
+## Follow-up 3: how the dequantize actually works, and why `iq2_s` is the slow one
+
+Date: 2026-09-27, same session
+
+There are two matmul paths for quantized weights on Vulkan, and which one a type gets decides its speed.
+
+**The int dot path.** `mul_mmq.comp` dequantizes the weights into an int8 domain and uses integer dot
+products against the activation quantized to q8_1. On this GPU that is the fast path, because RDNA2 has
+`dot2`, and it is why the dense `q6_K` and `q8_0` matmuls reach 2430 to 3372 GFLOPS/s.
+
+**The fp16 path.** `mul_mm.comp` dequantizes the weights to fp16 into shared memory through `store_a`,
+then runs an fp16 matrix multiply reading them back.
+
+The types each path supports:
+
+| path | types |
+| --- | --- |
+| int dot, `mul_mmq_funcs.glsl` | Q2_0, Q2_K, Q3_K, Q4_0, Q4_1, Q4_K, Q5_0, Q5_1, Q5_K, Q6_K, Q8_0, **IQ3_S**, **IQ4_XS**, MXFP4 |
+| fp16, `mul_mm_funcs.glsl` | F32, F16, BF16, IQ1_S, IQ1_M, **IQ2_XXS**, **IQ2_XS**, **IQ2_S**, IQ3_XXS, IQ3_S, IQ4_NL, IQ4_XS, MXFP4, NVFP4 |
+
+**`IQ2_S` is only in the second list.** It has no int dot kernel, so it is dequantized to fp16 and run as
+an fp16 matmul, on a GPU whose integer dot product rate is what the dense matmuls are exploiting.
+
+That lines up with the profile, where the three expert types in this model split exactly as the two
+lists do:
+
+| expert tensor | calls | total ms | rate | path |
+| --- | --- | --- | --- | --- |
+| `iq2_s` m=512 k=2048 | 78 | 763 | 878 GFLOPS/s | fp16 |
+| `iq3_s` m=2048 k=512 | 39 | 269 | 1230 GFLOPS/s | int dot |
+| `iq4_xs` m=2048 k=512 | 3 | 18 | 1453 GFLOPS/s | int dot |
+
+The two that take the int dot path run at 1.4 to 1.7x the rate of the one that does not, and the one
+that does not is the largest single item in the whole prefill pass.
+
+### What the fp16 path does per 8 weights of `iq2_s`
+
+From `mul_mm_funcs.glsl`, per thread and per 8 k-values: four integer divides and shifts to derive the
+block and group indices, one shared memory lookup into `iq2s_grid[1024]`, where each entry is a `uvec2`
+so every access is 8 bytes wide and irregular, two `unpack8` calls, eight conditional negations driven by
+the sign byte, and four shared memory stores of `FLOAT_TYPEV2`. Then the matmul reads all of that back
+out of shared memory and does fp16 FMAs.
+
+Against that, the int dot path keeps the weights in a packed int8 form and dots them against a q8_1
+activation, with no fp16 round trip at all. That is the whole difference.
+
+### The change, its size, and its expected value
+
+Adding an int dot kernel for `IQ2_S` means a new branch in `mul_mmq_funcs.glsl` that maps the 2 bit codes
+through `iq2s_grid` into the int8 domain, applies the group scale `d * 0.25 * (0.5 + scale)` and the sign
+byte in integer arithmetic, and packs them for the dot product, plus the shared memory budget for the
+8192 byte LUT in `ggml_vk_matmul_int_shmem_support`, plus the generator and host entries. It is a new
+kernel variant, not a tweak, and the sign and scale handling in the integer domain is exactly where a
+mistake would be silent, so it needs the CPU and Vulkan outputs compared, as the planar3 work did.
+
+Expected value, from the table above: if `iq2_s` reached the 1450 GFLOPS/s that `iq4_xs` gets on the int
+path, its 763 ms would become about 460 ms, so a pass of 2220 ms would become about 1920 ms, and prompt
+processing would go from 230 to about 265 t/s. That is roughly 15 percent, which is the largest single
+win available in this pass, and it is the only one left that the measurements support.
+
+### What was not done
+
+No code was written for this yet. The dequantize question has a specific answer that is structural, not a
+micro-optimisation: the type is missing from the fast path's type list. Before adding the kernel it is
+worth confirming the attribution on a cheap shape, since three earlier hypotheses in this document were
+wrong, and the `CONCAT` numbering above is already flagged as suspect.
