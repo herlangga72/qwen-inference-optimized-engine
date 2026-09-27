@@ -259,6 +259,9 @@ public:
     // used in view offsets, need to match for valid graph reuse
     uint32_t head;
     int32_t rs_z;
+
+    // true when the active state rows are contiguous and in order
+    bool rows_contiguous;
 };
 
 class llm_graph_input_attn_kv : public llm_graph_input_i {
@@ -1039,6 +1042,7 @@ struct llm_graph_context {
                uint32_t   rs_head,
                uint32_t   rs_size,
                 int32_t   rs_zero,
+                bool      state_contiguous = false,
             const llm_graph_get_rows_fn & get_state_rows = ggml_get_rows) const;
 
     llm_graph_input_rs * build_rs_inp() const;

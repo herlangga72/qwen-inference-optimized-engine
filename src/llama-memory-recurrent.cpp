@@ -1331,6 +1331,24 @@ uint32_t llama_memory_recurrent_context::get_size() const {
     return mem->size;
 }
 
+bool llama_memory_recurrent_context::state_rows_are_contiguous() const {
+    // with rollback the copy index carries a snapshot offset, so the mapping is never the identity
+    if (mem->n_rs_seq != 0) {
+        return false;
+    }
+
+    const uint32_t head = get_head();
+    const uint32_t n_rs = get_n_rs();
+
+    for (uint32_t i = 0; i < n_rs; ++i) {
+        if (mem->cells[head + i].src0 != (int32_t) (head + i)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 ggml_tensor * llama_memory_recurrent_context::get_r_l(int32_t il) const {
     return mem->r_l[il];
 }

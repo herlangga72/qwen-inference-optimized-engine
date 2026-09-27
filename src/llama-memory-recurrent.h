@@ -173,6 +173,9 @@ public:
     int32_t  get_rs_z() const;
     uint32_t get_size() const;
 
+    // true when the active state rows are the identity mapping [head, head + n_rs)
+    bool state_rows_are_contiguous() const;
+
     ggml_tensor * get_r_l(int32_t il) const;
     ggml_tensor * get_s_l(int32_t il) const;
     ggml_tensor * get_p_l(int32_t il) const;
