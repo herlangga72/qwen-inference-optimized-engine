@@ -115,6 +115,33 @@ loading the model. Note that this makes disk the binding constraint, not RAM: th
 - Store files written before this work are not readable. The format changed: 4 KB blocks, a 12 byte
   frame header carrying a generation, and `LLAMA_STATE_SEQ_VERSION` 4.
 
+## Upstream relationship and rules
+
+This is an independent fork. It is not a contribution to llama.cpp, and nothing from it is sent
+upstream: no pull requests, no issues, no comments on `ggml-org/llama.cpp`. That is deliberate, and it
+is the reason this project does not follow the rules upstream sets for contributions.
+
+To be specific about what is disregarded. Upstream llama.cpp ships no `CODE_OF_CONDUCT.md` at the
+commit this fork is based on. Its contribution rules live in `CONTRIBUTING.md` and in the `AGENTS.md`
+guidance for AI agents. Those documents exist to protect a small team's review time, and they carry
+rules that this project does not follow: they discourage AI written commit messages and PR text,
+require a contributor to own long-term maintenance of whatever is merged, and instruct autonomous
+agents to stay out of the repository entirely. This fork works with AI assistance throughout, and
+every commit in it carries an `Assisted-by` trailer.
+
+Opting out is the whole point of stating this. A contribution policy is a contract about what happens
+to work after it is sent to the upstream project. Nothing here is sent there, so nobody upstream is
+asked to review, merge or maintain any of it, and no maintainer time is consumed. What is owed instead
+is honesty that the fork diverges, which is what this section is for.
+
+Two inherited files are upstream documentation rather than the policy of this project:
+`CONTRIBUTING.md` and `AGENTS.md`. Both are still in the tree, and both describe how to contribute to
+llama.cpp, which this project does not do.
+
+History and licence are unaffected. The full upstream history is present, llama.cpp is MIT licensed
+and so is this, and the fork keeps `origin` pointed at `ggml-org/llama.cpp` so it can pull upstream
+changes down.
+
 Upstream build instructions, model support and the REST API are unchanged and still apply below.
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
