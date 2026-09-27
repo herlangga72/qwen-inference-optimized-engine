@@ -115,6 +115,8 @@ static vk_buffer ggml_vk_create_buffer(vk_device& device, size_t size, const std
             import_info.setPNext(&mem_flags_info);
             buf->device_memory = device->device.allocateMemory({ size, memory_type_idx, &import_info });
         } catch (const vk::SystemError& e) {
+            // the caller falls back to a copy, but the driver's reason is worth having
+            GGML_LOG_WARN("ggml_vulkan: Failed to import %zu bytes of host memory (%s)\n", size, e.what());
         }
     } else {
         for (auto it = req_flags_list.begin(); it != req_flags_list.end(); it++) {
@@ -758,14 +760,19 @@ ggml_backend_buffer_i ggml_backend_vk_buffer_interface = {
 
 vk_buffer ggml_vk_buffer_from_host_ptr(vk_device & device, void * ptr, size_t size) {
     if (!device->external_memory_host) {
+        GGML_LOG_WARN("ggml_vulkan: host pointer import unavailable, device reports no external memory host\n");
         return {};
     }
 
     uintptr_t uptr = reinterpret_cast<uintptr_t>(ptr);
     if (uptr & (device->min_imported_host_pointer_alignment - 1)) {
+        GGML_LOG_WARN("ggml_vulkan: host pointer import refused, pointer %p is not %zu byte aligned\n",
+                ptr, device->min_imported_host_pointer_alignment);
         return {};
     }
     if (size & (device->min_imported_host_pointer_alignment - 1)) {
+        GGML_LOG_WARN("ggml_vulkan: host pointer import refused, size %zu is not %zu byte aligned\n",
+                size, device->min_imported_host_pointer_alignment);
         return {};
     }
 
