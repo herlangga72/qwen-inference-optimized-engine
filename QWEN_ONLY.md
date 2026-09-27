@@ -166,6 +166,27 @@ once per sequence. Same machine, both build trees rebuilt from the change. Full 
 No full-engine run: the change was verified on the exported graph at the real shapes and on the
 synthetic arch models.
 
+### Recurrent state view (2026-09-27)
+
+`build_rs` returns a `ggml_view_2d` of the cache instead of gathering the active recurrent state rows
+when they are already the identity mapping `[head, head + n_rs)`. Same machine, both build trees
+rebuilt from the change. Full write-up in `docs/research/08-recurrent-state-phase1-results.md`.
+
+| check | result |
+| --- | --- |
+| CPU build and Vulkan build | 0 errors |
+| `ctest -L main`, both build trees | 34 / 34 both |
+| `test-llama-archs -s 1` qwen35 / qwen35moe / qwen4exp | all pass, NMSE 0.00e+00 |
+| generated text, 0.8B and 35B, single sequence, CPU and Vulkan0 | identical to pre-change |
+| generated text, 0.8B, 2 and 4 sequences in one batch, CPU and Vulkan0 | identical to pre-change |
+| predicate forced false, gather path | reproduces every pre-change baseline |
+| tg128, 35B, Vulkan0 | 22.33 to 24.21 t/s |
+| batched decode, S_TG at B=8, 35B, Vulkan0 | 44.30 to 49.11 t/s |
+| batched prefill, S_PP at B=8, 35B, Vulkan0 | 239.60 to 241.35 t/s, unchanged |
+
+Note for future checks: `llama-passkey -np N` decodes one sequence only (`n_grp = grp_attn_n`), so it
+cannot verify the multi-sequence state mapping; `llama-batched -np N -kvu` does.
+
 ## Deliberate retentions
 
 - `models/templates/*.jinja`: chat/autoparser test corpus, arch independent (the chat parsing tests
