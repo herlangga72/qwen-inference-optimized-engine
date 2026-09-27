@@ -392,3 +392,45 @@ can:
 So the answer to the question asked is: the values are not degraded, the activation is quantized the same
 way the rest of the model already quantizes it, and the measurement that settles it is the exact output
 comparison rather than the perplexity number.
+
+---
+
+## The int path is real on this device, and `iq2_s` is genuinely the only type missing from it
+
+Date: 2026-09-27, same session
+
+Checked against the built artifact rather than the source lists, using the generated variant header at
+`build-vk/ggml/src/ggml-vulkan/ggml-vulkan-shaders.hpp`, which declares every shader variant this build
+produced. For the MoE op:
+
+| variant | present |
+| --- | --- |
+| `matmul_id_iq3_s_q8_1` | yes |
+| `matmul_id_iq4_xs_q8_1` | yes |
+| `matmul_id_q2_0_q8_1`, `matmul_id_mxfp4_q8_1` | yes |
+| **`matmul_id_iq2_s_q8_1`** | **no, only `matmul_id_iq2_s_f16` and its dot2 forms** |
+
+That is the same split the profile shows in speed, and it confirms the plan: the int dot family is
+generated and selected on this device for exactly the types named earlier, and `iq2_s` is absent from it.
+Mid-investigation I briefly thought the int path might be dead on a `dot2` device, because the generator
+gates one list on `!dot2`; the header disproves that for this build, since the `_q8_1` variants are there
+for the other types.
+
+## The remaining edit list
+
+Nothing was changed in the tree. The work is these six edits plus a build and a verification:
+
+1. `mul_mmq_shmem_types.glsl`: an `IQ2_S` arm with `QUANT_R_MMQ 1` and a cache of
+   `int32_t qs[8]` plus `FLOAT_TYPEV2 dm`, since this type needs two scales where `IQ3_S` needs one.
+2. `mul_mmq_funcs.glsl`: `block_a_to_shmem`, `block_a_to_registers` and `mmq_dot_product` for `IQ2_S`,
+   modelled on the `IQ3_S` arm. The dot splits into two int32 sums, `qs[0..3]` scaled by `dm.x` and
+   `qs[4..7]` by `dm.y`, which is the `db[l/2]` split in `dequantize_row_iq2_s`.
+3. `ggml-vulkan.cpp`, `ggml_vk_matmul_int_shmem_support`: a `block_a_size` case for `IQ2_S`, and the
+   LUT accounted in `total_size`. The grid is copied into shared memory by `init_iq_shmem`, so it is
+   8192 bytes of the 64 KB budget.
+4. `ggml-vulkan.cpp`: `IQ2_S` added to the two `sg_create_mmq` lists, the MoE one on `tc_mmqid_int_k`
+   beside `iq3_s`, and the dense one on `tc_mmq_int_k`.
+5. `vulkan-shaders-gen.cpp`: `iq2_s` added to the `_q8_1` generation list so the variant exists.
+6. Build, then verify against the 938 byte CPU reference, then bench pp512 against 231.52.
+
+Step 2 is the one that must not be rushed, because the two-scale split is silent when wrong.
