@@ -76,6 +76,15 @@ struct llm_bigram_bpe {
     size_t size;
 };
 
+// development switch: force the reference pre-tokenizer while the rewrite settles
+static bool llm_tokenizer_use_legacy() {
+    static const bool legacy = [] {
+        const char * env = getenv("LLAMA_TOKENIZER_LEGACY");
+        return env != nullptr && atoi(env) != 0;
+    }();
+    return legacy;
+}
+
 struct llm_tokenizer_bpe : llm_tokenizer {
     llm_tokenizer_bpe(const llama_vocab & vocab) {
         GGML_ASSERT(vocab.get_type() == LLAMA_VOCAB_TYPE_BPE);
@@ -153,6 +162,12 @@ struct llm_tokenizer_bpe_session {
 
     virtual void tokenize(const std::string & text, std::vector<llama_token> & output) {
         int final_prev_index = -1;
+
+        // the hand written scanner for qwen35/qwen2 lands in this spot in a later task; until then both
+        // settings take the reference path, so the differential harness compares it with itself
+        const bool use_legacy = llm_tokenizer_use_legacy();
+        (void) use_legacy;
+
         const auto word_collection = unicode_regex_split(text, tokenizer.regex_exprs);
 
         symbols_final.clear();
