@@ -1,6 +1,7 @@
 #version 450
 
 #include "types.glsl"
+#include "planar3_tables.glsl"
 
 #if defined(SET_ROWS) && QUANT_K == 1
 layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
@@ -55,6 +56,58 @@ void quantize(uint dst_idx, uint src_idx)
         const uint xi1 = min(15, int(x1 + 8.5));
 
         data_q[dst_idx].qs[j]  = uint8_t(xi0 | (xi1 << 4));
+    }
+}
+#endif
+
+#if defined(DATA_A_PLANAR3_0)
+// Mirrors quantize_row_planar3_0_ref() in ggml/src/ggml-quants.c: normalise by the L2 norm of the
+// 256 coordinates, rotate each pair by its own Givens angle, snap every coordinate to the nearest of
+// the 8 centroids, then pack 8 three bit indices per group into 3 bytes little-endian.
+void quantize(uint dst_idx, uint src_idx)
+{
+    float x[QUANT_K_PLANAR3_0];
+    float norm2 = 0.0;
+
+    [[unroll]] for (int j = 0; j < QUANT_K_PLANAR3_0; ++j) {
+        const float v = float(data_s[src_idx + j]);
+        x[j] = v;
+        norm2 += v*v;
+    }
+
+    const float norm = sqrt(norm2);
+    const float inv  = (norm > 1e-12) ? (1.0/norm) : 0.0;
+
+    data_q[dst_idx].norm = float16_t(norm);
+
+    [[unroll]] for (int g = 0; g < QUANT_K_PLANAR3_0/8; ++g) {
+        uint w = 0u;
+
+        [[unroll]] for (int t = 0; t < 8; ++t) {
+            const int i = 4*g + (t >> 1); // pair index, two coordinates per rotation
+
+            const float c = PLANAR3_0_GIVENS[2*i + 0];
+            const float s = PLANAR3_0_GIVENS[2*i + 1];
+            const float a = x[2*i + 0]*inv;
+            const float b = x[2*i + 1]*inv;
+            const float v = ((t & 1) == 0) ? (c*a - s*b) : (s*a + c*b);
+
+            uint  best = 0u;
+            float bd   = abs(v - PLANAR3_0_CB[0]);
+            [[unroll]] for (uint l = 1u; l < 8u; ++l) {
+                const float d = abs(v - PLANAR3_0_CB[l]);
+                if (d < bd) {
+                    bd   = d;
+                    best = l;
+                }
+            }
+
+            w |= best << (3*t);
+        }
+
+        data_q[dst_idx].qs[3*g + 0] = uint8_t( w        & 0xFF);
+        data_q[dst_idx].qs[3*g + 1] = uint8_t((w >>  8) & 0xFF);
+        data_q[dst_idx].qs[3*g + 2] = uint8_t((w >> 16) & 0xFF);
     }
 }
 #endif

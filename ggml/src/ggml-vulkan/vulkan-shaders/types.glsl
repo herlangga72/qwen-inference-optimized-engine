@@ -204,6 +204,27 @@ struct block_q1_0
     uint8_t qs[QUANT_K_Q1_0 / 8];
 };
 
+// KV only: one f16 norm per 256 coordinates, then 32 groups of 8 coordinates whose 3 bit codes are
+// packed little-endian into 3 bytes. Mirrors block_planar3_0 in ggml-common.h, which is 98 bytes, so
+// the std430 stride here has to come out at 98 too. The 2 byte alignment of float16_t is what makes
+// that work without padding.
+#define QUANT_K_PLANAR3_0 256
+
+struct block_planar3_0_packed16
+{
+    float16_t norm;
+    uint8_t   qs[3*QUANT_K_PLANAR3_0/8];
+};
+
+#if defined(DATA_A_PLANAR3_0)
+// one f16 norm and 3 bit codes: no scale pair, and the codes are not nibbles
+#define QUANT_K QUANT_K_PLANAR3_0
+#define QUANT_R 1
+#define QUANT_AUXF 1
+#define A_TYPE block_planar3_0_packed16
+#define A_TYPE_PACKED16 block_planar3_0_packed16
+#endif
+
 #if defined(DATA_A_Q1_0)
 #define QUANT_K QUANT_K_Q1_0
 #define QUANT_R QUANT_R_Q1_0

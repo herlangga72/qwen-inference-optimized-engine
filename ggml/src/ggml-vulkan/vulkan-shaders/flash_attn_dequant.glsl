@@ -12,6 +12,10 @@
 // illegal to return from / pass to functions. Macros expand inline where the
 // float16 stays in storage and is converted to FLOAT_TYPE at use.
 
+// The planar3_0 centroid table and rotation live in their own header because the shader that writes
+// the cache needs them too.
+#include "planar3_tables.glsl"
+
 // F32 is fed as a vec4 "block" (4 floats), matching what dequant_funcs_cm2.glsl
 // does for F32 in the cm2 shader. FaBlockBytesK/V == 16 for F32.
 layout (binding = 1) readonly buffer K_PACKED_F32  { vec4 data[]; }                k_packed_f32;
@@ -32,6 +36,8 @@ layout (binding = 2) readonly buffer V_PACKED_IQ4_NL { block_iq4_nl_packed16 dat
 
 layout (binding = 1) readonly buffer K_PACKED_BF16 { u16vec4 data[]; } k_packed_bf16;
 layout (binding = 2) readonly buffer V_PACKED_BF16 { u16vec4 data[]; } v_packed_bf16;
+
+layout (binding = 2) readonly buffer V_PACKED_PLANAR3_0 { block_planar3_0_packed16 data[]; } v_packed_planar3_0;
 
 // Q4_1 and Q5_1 packed32 views: aliased to the same memory as the packed16
 // views, used by the MMQ K-side hot path for fast 4-uint loads.
@@ -118,6 +124,24 @@ layout (binding = 1) readonly buffer K_PACKED_Q5_1_P32 { block_q5_1_packed32 dat
 #define FA_DEQUANT4_BF16(BUF) \
     return FLOAT_TYPEV4(bf16_to_fp32(uvec4(BUF.data[(a_offset + ib) / 4])));
 
+// Returns the 4 coordinates starting at iqs, which the FA caller always passes as a multiple of 4.
+// Groups are 8 coordinates and windows are 4, so a window never straddles a group and one 24 bit
+// word holds every index needed. Fields are read in place: a struct holding a float16 is not legal as
+// a local value unless the shader enables the float16 arithmetic extension, which is the same reason
+// every other macro here works this way.
+#define FA_DEQUANT4_PLANAR3_0(BUF) {                                                              \
+    const uint g    = (iqs >> 3);                                                                  \
+    const uint base = (iqs & 7u);                                                                  \
+    const uint w    = uint(BUF.data[a_offset + ib].qs[3u*g + 0u])                                  \
+                    | (uint(BUF.data[a_offset + ib].qs[3u*g + 1u]) << 8)                           \
+                    | (uint(BUF.data[a_offset + ib].qs[3u*g + 2u]) << 16);                         \
+    const float norm = float(BUF.data[a_offset + ib].norm);                                        \
+    return FLOAT_TYPEV4(PLANAR3_0_CB[(w >> (3u*(base + 0u))) & 7u] * norm,                          \
+                        PLANAR3_0_CB[(w >> (3u*(base + 1u))) & 7u] * norm,                          \
+                        PLANAR3_0_CB[(w >> (3u*(base + 2u))) & 7u] * norm,                          \
+                        PLANAR3_0_CB[(w >> (3u*(base + 3u))) & 7u] * norm);                         \
+}
+
 FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
         switch (FaTypeK) {
@@ -139,6 +163,7 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case GGML_TYPE_Q5_1: FA_DEQUANT4_Q5_1(v_packed_q5_1)
             case GGML_TYPE_Q8_0: FA_DEQUANT4_Q8_0(v_packed_q8_0)
             case GGML_TYPE_IQ4_NL: FA_DEQUANT4_IQ4_NL(v_packed_iq4_nl)
+            case GGML_TYPE_PLANAR3_0: FA_DEQUANT4_PLANAR3_0(v_packed_planar3_0)
             case GGML_TYPE_BF16: FA_DEQUANT4_BF16(v_packed_bf16)
         }
     }
