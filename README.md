@@ -135,10 +135,14 @@ asked to review, merge or maintain any of it, and no maintainer time is consumed
 is honesty that the fork diverges, which is what this section is for.
 
 The agentic coding configuration that upstream ships has been removed from this fork: `AGENTS.md`,
-`CLAUDE.md`, `.gemini/settings.json` and `.pi/gg/SYSTEM.md`. Those files exist to make AI coding agents
-work under upstream's rules, which this project does not follow, so keeping them would have left the
-tree quoting one policy while the project ran on another. They remain in the git history if anyone needs
-to read them.
+`CLAUDE.md`, `.gemini/settings.json`, `.pi/gg/SYSTEM.md`, and the two agent skills under `skills/`,
+`add-new-model` and `code-review`. Those files exist to make AI coding agents work under upstream's
+rules, which this project does not follow, so keeping them would have left the tree quoting one policy
+while the project ran on another. They remain in the git history if anyone needs to read them.
+
+Two things that look similar were kept, because they are not agent configuration. The `SKILL.md` under
+`tools/ui/src/lib/components/app` is the Svelte component conventions for that directory, and the
+`agentic` names in `tools/ui/src/lib` are the web UI's own features.
 
 `CONTRIBUTING.md` is left in place. It is inherited upstream documentation rather than this project's
 policy, and it is part of the upstream tree.
