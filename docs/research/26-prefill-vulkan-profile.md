@@ -88,3 +88,73 @@ prompt latency. If it is to be optimised, it should be for its own sake, not for
 
 The global constraint from the prefill plan holds: no changes to model weights or their quantization, so
 the MoE gap has to be closed in the kernel, not by moving the experts to a cheaper type.
+
+---
+
+## Follow-up: both of my first two hypotheses were wrong
+
+Date: 2026-09-27, same session
+
+**Correction to the section above.** It attributed the MoE cost to per-expert-slot work and predicted
+about 1.5x on prompt processing from fixing it. That inference came from comparing GFLOPS/s across
+*different quantization formats*, which is not a valid comparison: `iq2_s` does far fewer FLOPs per byte
+than `q6_K`, so a lower FLOP rate is expected and says nothing about efficiency. Checked against the
+fast path and the byte accounting, both hypotheses fail.
+
+### The kernel is already on the fast path
+
+`MUL_MAT_ID` has no shader of its own: it is `mul_mm.comp` with `MUL_MAT_ID` defined, and it has two ways
+to find the rows belonging to an expert, a precomputed packed table and a per workgroup scan.
+
+The precomputed one is enabled: `hoist_row_ids` requires `n_as <= 1024`, both `nei0` and `nei1` to fit 16
+bits, and the table to fit one binding, and our shape is 256 experts, 8 used per token, 512 tokens.
+
+Shared memory is not the limit either. For `iq2_s` the LUT is 8192 bytes, the largest of any type here,
+and against a 65536 byte limit the three `mmqid` warp tiles come to 12560, 16928 and 25664 bytes, so
+`mul_mat_id_s`, `_m` and `_l` are all still supported and no fallback to the vector path happens.
+
+### What the op actually costs
+
+`MUL_MAT_ID iq2_s m=512 n=8 k=2048 n_expert=256 batch=512`, 9781 us per call:
+
+| quantity | value |
+| --- | --- |
+| expert weights read, 256 experts at 2.0625 bpw | 69.2 MB |
+| arithmetic, 512 tokens x 8 experts | 8.59 GFLOP |
+| arithmetic intensity | 124 FLOP/byte |
+| achieved bandwidth | 7.08 GB/s of a 68 GB/s ceiling |
+| achieved rate | 878 GFLOPS/s against 2900 for dense q6_K |
+| time if it were at the memory ceiling | 1018 us |
+
+So the op is not at the memory ceiling, not at the dense matmul's compute rate, and not limited by
+expert-slot bookkeeping either. At 124 FLOP/byte it should be compute bound, and it is: the bound is in
+the `iq2_s` dequantize path, whose grid lookup is why that type reserves 8192 bytes of shared memory
+when `iq3_s` needs 2048 and `iq4_xs` needs 64. That is deep kernel work in the dequant, and the type is
+fixed by the no-requantization constraint.
+
+The batch insensitivity is explained without any per-slot theory: at both batch 128 and batch 512 nearly
+every expert is touched, so the weight bytes are the same, and the extra tokens add little on top of a
+dequant bound.
+
+### `CONCAT` is the better first target
+
+It is the delta-net convolution input, `delta-net-base.cpp:472`, `ggml_concat(conv_states, qkv_mixed, 0)`,
+once per state layer, 30 calls a pass.
+
+| quantity | value |
+| --- | --- |
+| elements, inner 4096 x (kernel 4 + 1) x 512 tokens | 10.5 M |
+| bytes moved, read plus write | 83.9 MB |
+| measured | 15.6 GB/s, 23% of the ceiling |
+| at the ceiling | 1234 us against the measured 5380 |
+| headroom | about 4.4x, worth roughly 120 ms of a 2220 ms pass |
+
+A concatenation is a copy. It should run near the ceiling, and it is running at a quarter of it. That is
+the cheapest real win in this profile, and unlike the MoE line it does not depend on the model's
+types.
+
+### State of the work
+
+No code has been changed by this investigation. Two plausible fixes were tested as hypotheses first and
+both were disproved by measurement, so nothing was worth committing. The next concrete step is the
+`CONCAT` path, not the MoE kernel.
