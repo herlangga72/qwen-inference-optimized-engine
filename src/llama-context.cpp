@@ -3265,6 +3265,128 @@ size_t llama_context::state_seq_save_file(llama_seq_id seq_id, const char * file
     return res;
 }
 
+size_t llama_context::state_seq_save_file_direct_once(llama_seq_id seq_id, const char * filepath, const llama_token * tokens, size_t n_token_count, uint32_t * gen_out) {
+    llama_io_write_direct io(filepath, true);
+
+    if (!io.good()) {
+        LLAMA_LOG_ERROR("%s: failed to open %s for writing\n", __func__, filepath);
+        return 0;
+    }
+
+    // block 0 is the file header: magic, version, token count, crc, generation
+    uint32_t hdr[5];
+    hdr[0] = LLAMA_STATE_SEQ_MAGIC;
+    hdr[1] = LLAMA_STATE_SEQ_VERSION;
+    hdr[2] = (uint32_t) n_token_count;
+    hdr[3] = llama_io_crc32(hdr, 3 * sizeof(uint32_t));
+    hdr[4] = io.gen();
+
+    *gen_out = hdr[4];
+
+    io.set_prefix(hdr, sizeof(hdr));
+
+    // then the tokens and the state, as one framed byte stream
+    io.write(tokens, sizeof(llama_token) * n_token_count);
+
+    state_seq_write_data(io, seq_id, 0);
+
+    io.flush();
+
+    if (!io.good()) {
+        LLAMA_LOG_ERROR("%s: write failed with error %d\n", __func__, io.error());
+        return 0;
+    }
+
+    return io.n_bytes();
+}
+
+size_t llama_context::state_seq_save_file_direct(llama_seq_id seq_id, const char * filepath, const llama_token * tokens, size_t n_token_count) {
+    // A write can be lost between the process and the device on this class of volume, and a block
+    // that was never written reads back as whatever held it before, so a save is not done until the
+    // file reads back with every block intact. A damaged attempt is rewritten from scratch, which is
+    // safe because the state it serializes is unchanged by saving.
+    // See docs/research/23-write-path-loses-blocks-results.md
+    const int max_attempts = 3;
+
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        uint32_t gen = 0;
+        const size_t written = state_seq_save_file_direct_once(seq_id, filepath, tokens, n_token_count, &gen);
+        if (written == 0) {
+            return 0;
+        }
+
+        const size_t bad = llama_io_verify_direct(filepath, gen);
+        if (bad == 0) {
+            if (attempt > 1) {
+                LLAMA_LOG_WARN("%s: %s was damaged on %d attempt(s), intact on attempt %d\n",
+                               __func__, filepath, attempt - 1, attempt);
+            }
+            return written;
+        }
+
+        LLAMA_LOG_WARN("%s: %s has %zu damaged blocks on attempt %d, rewriting\n",
+                       __func__, filepath, bad, attempt);
+    }
+
+    LLAMA_LOG_ERROR("%s: %s could not be written intact in %d attempts\n",
+                    __func__, filepath, max_attempts);
+    return 0;
+}
+
+size_t llama_context::state_seq_load_file_direct(llama_seq_id seq_id, const char * filepath, llama_token * tokens_out, size_t n_token_capacity, size_t * n_token_count_out) {
+    llama_io_read_direct io(filepath, true);
+
+    if (!io.good()) {
+        LLAMA_LOG_ERROR("%s: failed to open %s for reading\n", __func__, filepath);
+        return 0;
+    }
+
+    uint32_t hdr[5] = { 0, 0, 0, 0, 0 };
+    io.read_prefix(hdr, sizeof(hdr));
+
+    if (!io.good() ||
+        hdr[0] != LLAMA_STATE_SEQ_MAGIC ||
+        hdr[1] != LLAMA_STATE_SEQ_VERSION ||
+        llama_io_crc32(hdr, 3 * sizeof(uint32_t)) != hdr[3] ||
+        hdr[4] == 0) {
+        LLAMA_LOG_ERROR("%s: bad or damaged sequence state header in %s\n", __func__, filepath);
+        return 0;
+    }
+
+    // reject any block left over from an earlier save of this file, which would be a valid frame
+    // with a matching crc and would otherwise be restored as if it were this save's data
+    io.set_gen(hdr[4]);
+
+    const size_t n_token_count = hdr[2];
+
+    if (tokens_out == nullptr) {
+        *n_token_count_out = n_token_count;
+        return 0;
+    }
+
+    if (n_token_count > n_token_capacity) {
+        LLAMA_LOG_ERROR("%s: token count %zu exceeds capacity %zu\n", __func__, n_token_count, n_token_capacity);
+        return 0;
+    }
+
+    io.read(tokens_out, sizeof(llama_token) * n_token_count);
+    *n_token_count_out = n_token_count;
+
+    if (!io.good()) {
+        LLAMA_LOG_ERROR("%s: short read of the token block in %s\n", __func__, filepath);
+        return 0;
+    }
+
+    const size_t nread = state_seq_read_data(io, seq_id, 0);
+
+    if (!nread || !io.good()) {
+        LLAMA_LOG_ERROR("%s: failed to restore sequence state from %s\n", __func__, filepath);
+        return 0;
+    }
+
+    return nread;
+}
+
 size_t llama_context::state_write_data(llama_io_write_i & io) {
     LLAMA_LOG_DEBUG("%s: writing state\n", __func__);
 
@@ -4222,6 +4344,28 @@ size_t llama_state_seq_load_file(llama_context * ctx, const char * filepath, lla
 
     try {
         return ctx->state_seq_load_file(dest_seq_id, filepath, tokens_out, n_token_capacity, n_token_count_out);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: error loading sequence state file: %s\n", __func__, err.what());
+        return 0;
+    }
+}
+
+size_t llama_state_seq_save_file_direct(llama_context * ctx, const char * filepath, llama_seq_id seq_id, const llama_token * tokens, size_t n_token_count) {
+    ctx->synchronize();
+
+    try {
+        return ctx->state_seq_save_file_direct(seq_id, filepath, tokens, n_token_count);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: error saving sequence state file: %s\n", __func__, err.what());
+        return 0;
+    }
+}
+
+size_t llama_state_seq_load_file_direct(llama_context * ctx, const char * filepath, llama_seq_id dest_seq_id, llama_token * tokens_out, size_t n_token_capacity, size_t * n_token_count_out) {
+    ctx->synchronize();
+
+    try {
+        return ctx->state_seq_load_file_direct(dest_seq_id, filepath, tokens_out, n_token_capacity, n_token_count_out);
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error loading sequence state file: %s\n", __func__, err.what());
         return 0;

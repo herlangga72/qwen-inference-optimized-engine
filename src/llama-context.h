@@ -185,6 +185,30 @@ struct llama_context {
      const llama_token * tokens,
                 size_t   n_token_count);
 
+    // same as the pair above, but the state streams straight to disk through O_DIRECT
+    // and a reused block buffer, so it never lands in host memory whole. See
+    // docs/research/20-direct-io-sink-results.md
+    size_t state_seq_save_file_direct(
+          llama_seq_id   seq_id,
+            const char * filepath,
+     const llama_token * tokens,
+                size_t   n_token_count);
+
+    // one save attempt, without the read back check the caller wraps around it
+    size_t state_seq_save_file_direct_once(
+          llama_seq_id   seq_id,
+            const char * filepath,
+     const llama_token * tokens,
+                size_t   n_token_count,
+              uint32_t * gen_out);
+
+    size_t state_seq_load_file_direct(
+          llama_seq_id   seq_id,
+            const char * filepath,
+           llama_token * tokens_out,
+                size_t   n_token_capacity,
+                size_t * n_token_count_out);
+
     //
     // perf
     //

@@ -46,7 +46,7 @@
 #define LLAMA_SESSION_VERSION 10
 
 #define LLAMA_STATE_SEQ_MAGIC   LLAMA_FILE_MAGIC_GGSQ
-#define LLAMA_STATE_SEQ_VERSION 3
+#define LLAMA_STATE_SEQ_VERSION 4
 
 #ifdef __cplusplus
 extern "C" {
@@ -908,6 +908,25 @@ extern "C" {
 
     // If tokens_out is NULL, only the token count is reported through n_token_count_out and no state is loaded
     LLAMA_API size_t llama_state_seq_load_file(
+            struct llama_context * ctx,
+                      const char * filepath,
+                    llama_seq_id   dest_seq_id,
+                     llama_token * tokens_out,
+                          size_t   n_token_capacity,
+                          size_t * n_token_count_out);
+
+    // The same pair, but the state streams straight to disk through O_DIRECT with one
+    // reused block buffer, so it never lands in host memory whole. Needs a filesystem
+    // that supports O_DIRECT, and 512 byte alignment is handled internally.
+    // See docs/research/20-direct-io-sink-results.md
+    LLAMA_API size_t llama_state_seq_save_file_direct(
+            struct llama_context * ctx,
+                      const char * filepath,
+                    llama_seq_id   seq_id,
+               const llama_token * tokens,
+                          size_t   n_token_count);
+
+    LLAMA_API size_t llama_state_seq_load_file_direct(
             struct llama_context * ctx,
                       const char * filepath,
                     llama_seq_id   dest_seq_id,
