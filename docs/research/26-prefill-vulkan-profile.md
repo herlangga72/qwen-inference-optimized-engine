@@ -489,3 +489,74 @@ bookkeeping, batch amortisation, and the concat double load. The pattern is cons
 in every case the candidate was plausible from the code and wrong when measured, and in this one the
 mistake was instrumented by a cross-type rate comparison, which is exactly the comparison this document had
 already warned about two sections earlier.
+
+---
+
+## The MoE op wastes its column tile, and that is the measured wall
+
+Date: 2026-09-27, same session
+
+This is the first explanation in this document that is confirmed by a prediction it made in advance rather
+than fitted afterwards.
+
+### The measurement
+
+Same command, only the batch changes, `ub 2048`:
+
+| batch | `MUL_MAT_ID iq2_s` rate | per call | pp throughput |
+| --- | --- | --- | --- |
+| 512 | 863 to 900 GFLOPS/s | 9.5 to 10.0 ms | 229.88 t/s |
+| 2048 | **1637 to 1639 GFLOPS/s** | 21.0 ms | 225.07 t/s |
+
+Four times the tokens costs 2.15 times the time, and the rate nearly doubles. Since the useful work is four
+times larger and the time is not, the kernel was doing work that did not scale with tokens, and most of it
+was not useful.
+
+### Why
+
+The tile selector for `mul_mat_id` picks by the narrow dimension:
+
+```c
+        if (m <= 32 || n <= 32) return 0;   // the small tile
+```
+
+and the small tile for the int path is 32 columns wide. Our MoE has one column per token routed to that
+expert, which at batch 512 with 8 experts over 256 experts is about 16, and at batch 2048 about 64. So:
+
+| batch | useful columns per expert | column tiles of 32 dispatched | useful fraction |
+| --- | --- | --- | --- |
+| 512 | ~16 | 1 | 50 percent |
+| 2048 | ~64 | 2 | 100 percent |
+
+At batch 512 every expert's matmul dispatches a full 32 wide tile and half of it multiplies padding. At
+batch 2048 the tiles are full, and the rate doubles. The prediction is arithmetic: 2x the useful fraction,
+2x the rate, and the measured 900 to 1638 is 1.82x.
+
+The same table explains the batch insensitivity that misled an earlier section of this document: going from
+batch 128 to 512 keeps the tile count at one per expert, so the time barely moves even though the tokens
+grow fourfold.
+
+### What this says about lowering the dispatch
+
+Dispatching less padding is exactly the right lever, and the two ways to try it are not equivalent:
+
+- **A larger batch does not work.** It fills the tiles, and the op does go twice as fast, but the pass does
+  not benefit: pp2048 with `ub 2048` measures 225.07 t/s against 229.88 for a 512 prompt. The other ops in
+  the pass get worse over a larger micro batch, which was already measured in the throughput table earlier.
+  A short prompt cannot be given more columns anyway.
+- **A narrower column tile does work in principle, and the size of the prize is now measured rather than
+  guessed.** If the small tile were 16 columns instead of 32, a batch of 512 would dispatch half the padding
+  and the op should reach the rate it already reaches at batch 2048. That is 1.82x on its 760 ms, worth
+  about 345 ms of a 2220 ms pass, or **pp512 from 230 to roughly 272 t/s, about 18 percent**.
+
+That is the same plumbing the `iq2_s` int path needed and it is now familiar: a new narrow tile entry in
+`mul_mmq_shmem_types` terms, the generator emitting the variant for that tile size, both host pipeline
+lists, and the tile selector choosing it when `n <= 16`. Unlike the dequant work, this one attacks the
+padding itself, which is where the measurements say the time goes.
+
+### What is not yet tested
+
+The narrow tile is a prediction too. It has one advantage over the previous four candidates: it is derived
+from a measurement of the same kernel at a fuller tile, so the rate it would reach is observed rather than
+modelled. The thing to test first, cheaply, is whether a 16 wide variant changes anything at all, before
+building the full selector wiring.
