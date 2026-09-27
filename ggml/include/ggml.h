@@ -430,7 +430,8 @@ extern "C" {
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_Q2_0    = 42,
-        GGML_TYPE_COUNT   = 43,
+        GGML_TYPE_PLANAR3_0 = 43, // KV only: 256 coords, f16 norm, 3 bit codes
+        GGML_TYPE_COUNT   = 44,
     };
 
     // [TAG_GGML_PREC]
@@ -2951,6 +2952,11 @@ extern "C" {
                    int64_t   nrows,
                    int64_t   n_per_row,
                const float * imatrix);
+
+    // Fills dst (n*n floats) with the block diagonal 2x2 rotation the planar3_0 KV type uses on each
+    // row of n coordinates: [c -s; s c] forward, its transpose when inverse is set. Exposed so the
+    // graph can undo the rotation once per token instead of once per cached position.
+    GGML_API void ggml_planar3_0_gen_rot(float * dst, int64_t n, bool inverse);
 
 #ifdef __cplusplus
     // restrict not standard in C++

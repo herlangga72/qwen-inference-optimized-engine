@@ -307,6 +307,10 @@ static ggml_type parse_ggml_type(const char * arg) {
         auto type = (ggml_type)i;
         const auto * name = ggml_type_name(type);
         if (name && striequals(name, arg)) {
+            if (type == GGML_TYPE_PLANAR3_0) {
+                fprintf(stderr, "\n%s: '%s' is a KV cache type, not a weight type\n\n", __func__, arg);
+                return GGML_TYPE_COUNT;
+            }
             return type;
         }
     }

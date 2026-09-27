@@ -191,6 +191,17 @@ typedef struct {
 } block_q2_0;
 static_assert(sizeof(block_q2_0) == sizeof(ggml_half) + QK2_0 / 4, "wrong q2_0 block size/padding");
 
+// 3-bit planar codes for the KV cache, one f16 norm per 256 coordinates.
+// Codes are 8 coordinates packed little-endian into 3 bytes, 32 groups per block.
+#define QK_PLANAR3_0 256
+#define PLANAR3_0_LEVELS 8
+#define PLANAR3_0_GROUPS (QK_PLANAR3_0/8)
+typedef struct {
+    ggml_half norm;
+    uint8_t qs[3*PLANAR3_0_GROUPS];
+} block_planar3_0;
+static_assert(sizeof(block_planar3_0) == sizeof(ggml_half) + 3*QK_PLANAR3_0/8, "wrong planar3_0 block size/padding");
+
 #define QK4_0 32
 typedef struct {
     ggml_half d;           // delta

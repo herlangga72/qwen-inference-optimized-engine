@@ -51,12 +51,52 @@ static float array_rmse(const float * a1, const float * a2, size_t n) {
 }
 
 // Total quantization error on test data
-static float total_quantization_error(const ggml_type_traits * qfns, const ggml_type_traits_cpu * qfns_cpu, size_t test_size, const float * test_data) {
+// planar3_0 stores rotated values: its dequantizer returns the rotated vector and the graph undoes
+// the rotation once per token. The round trip and the dot product reference have to account for it
+static void planar3_0_rotate(float * x, size_t n, bool inverse) {
+    const size_t blck = ggml_blck_size(GGML_TYPE_PLANAR3_0);
+
+    static std::vector<float> fwd;
+    static std::vector<float> inv;
+    if (fwd.size() != blck*blck) {
+        fwd.assign(blck*blck, 0.0f);
+        inv.assign(blck*blck, 0.0f);
+        ggml_planar3_0_gen_rot(fwd.data(), (int64_t) blck, false);
+        ggml_planar3_0_gen_rot(inv.data(), (int64_t) blck, true);
+    }
+
+    const std::vector<float> & rot = inverse ? inv : fwd;
+
+    for (size_t b = 0; b < n/blck; ++b) {
+        float * xb = x + b*blck;
+        std::vector<float> in(xb, xb + blck);
+        for (size_t i = 0; i < blck; ++i) {
+            float acc = 0.0f;
+            for (size_t j = 0; j < blck; ++j) {
+                acc += rot[i*blck + j]*in[j];
+            }
+            xb[i] = acc;
+        }
+    }
+}
+
+static void planar3_0_undo_rotation(float * x, size_t n) {
+    planar3_0_rotate(x, n, /*inverse*/ true);
+}
+
+static void planar3_0_rotate_ref(float * x, size_t n) {
+    planar3_0_rotate(x, n, /*inverse*/ false);
+}
+
+static float total_quantization_error(const ggml_type_traits * qfns, const ggml_type_traits_cpu * qfns_cpu, size_t test_size, const float * test_data, void (*post)(float *, size_t) = nullptr) {
     std::vector<uint8_t> tmp_q(2*test_size);
     std::vector<float> tmp_out(test_size);
 
     qfns_cpu->from_float(test_data, tmp_q.data(), test_size);
     qfns->to_float(tmp_q.data(), tmp_out.data(), test_size);
+    if (post) {
+        post(tmp_out.data(), test_size);
+    }
     return array_rmse(test_data, tmp_out.data(), test_size);
 }
 
@@ -88,7 +128,7 @@ static float dot_product(const float * a1, const float * a2, size_t test_size) {
 static float dot_product_error(const ggml_type_traits_cpu * qfns_cpu, ggml_type src0_type, size_t test_size,
                                const float * test_data1, const float * test_data2,
                                const float * test_data3, const float * test_data4,
-                               const int nrc) {
+                               const int nrc, void (*ref_pre)(float *, size_t) = nullptr) {
     const auto * vdot = ggml_get_type_traits_cpu(qfns_cpu->vec_dot_type);
     const size_t pad  = 64;
     const size_t bx   = ggml_row_size(src0_type, test_size) + pad;
@@ -104,7 +144,13 @@ static float dot_product_error(const ggml_type_traits_cpu * qfns_cpu, ggml_type 
         float result = INFINITY;
         qfns_cpu->vec_dot(test_size, &result, 0, tmp_q1.data(), 0, tmp_q2.data(), 0, 1);
 
-        const float dot_ref = dot_product(test_data1, test_data2, test_size);
+        // the kernel dots whatever the type stores, which for planar3_0 is the rotated row
+        std::vector<float> ref(test_data1, test_data1 + test_size);
+        if (ref_pre) {
+            ref_pre(ref.data(), test_size);
+        }
+
+        const float dot_ref = dot_product(ref.data(), test_data2, test_size);
         return fabsf(result - dot_ref) / test_size;
     }
 
@@ -186,7 +232,8 @@ static int test_vec_dot_q(bool verbose) {
         ggml_quantize_init(ei);
 
         if (qfns_cpu->from_float && qfns->to_float) {
-            const float total_error = total_quantization_error(qfns, qfns_cpu, test_size, test_data.data());
+            const auto post = type == GGML_TYPE_PLANAR3_0 ? planar3_0_undo_rotation : nullptr;
+            const float total_error = total_quantization_error(qfns, qfns_cpu, test_size, test_data.data(), post);
             const float max_quantization_error =
                 type == GGML_TYPE_Q1_0    ? MAX_QUANTIZATION_TOTAL_ERROR_BINARY :
                 type == GGML_TYPE_TQ1_0   ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
@@ -196,6 +243,7 @@ static int test_vec_dot_q(bool verbose) {
                 type == GGML_TYPE_IQ2_S   ? MAX_QUANTIZATION_TOTAL_ERROR_2BITS :
                 type == GGML_TYPE_Q3_K    ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
                 type == GGML_TYPE_IQ3_S   ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
+                type == GGML_TYPE_PLANAR3_0 ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
                 type == GGML_TYPE_IQ3_XXS ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS_XXS :
                 type == GGML_TYPE_NVFP4   ? MAX_QUANTIZATION_TOTAL_ERROR_FP4 : MAX_QUANTIZATION_TOTAL_ERROR;
             bool failed = !(total_error < max_quantization_error);
@@ -211,9 +259,11 @@ static int test_vec_dot_q(bool verbose) {
                 printf("%5s reference implementation error: %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], reference_error);
             }
 
-            const float vec_dot_error = dot_product_error(qfns_cpu, type, test_size, test_data.data(), test_data2.data(), nullptr, nullptr, 1);
+            const float vec_dot_error = dot_product_error(qfns_cpu, type, test_size, test_data.data(), test_data2.data(), nullptr, nullptr, 1,
+                type == GGML_TYPE_PLANAR3_0 ? planar3_0_rotate_ref : nullptr);
             const float max_allowed_error = type == GGML_TYPE_Q2_K || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ2_XXS ||
-                type == GGML_TYPE_IQ3_XXS || type == GGML_TYPE_IQ3_S || type == GGML_TYPE_IQ2_S
+                type == GGML_TYPE_IQ3_XXS || type == GGML_TYPE_IQ3_S || type == GGML_TYPE_IQ2_S ||
+                type == GGML_TYPE_PLANAR3_0
                 ? MAX_DOT_PRODUCT_ERROR_LOWBIT
                 : type == GGML_TYPE_Q1_0
                 ? MAX_DOT_PRODUCT_ERROR_BINARY

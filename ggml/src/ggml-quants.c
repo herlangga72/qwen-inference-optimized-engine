@@ -2110,6 +2110,214 @@ size_t quantize_q1_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     return nrow * row_size;
 }
 
+// ---------------------------------------------------------------------------
+// planar3_0: rotation and Lloyd-Max codebook for the KV cache
+// ported from ternary-bonsai-inference src/kvquant.rs
+// ---------------------------------------------------------------------------
+
+static uint64_t planar3_0_splitmix64(uint64_t * state) {
+    *state += 0x9E3779B97F4A7C15ull;
+    uint64_t z = *state;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+static double planar3_0_erf(double x) {
+    // Abramowitz & Stegun 7.1.26
+    const double sign = x < 0.0 ? -1.0 : 1.0;
+    x = fabs(x);
+    const double t = 1.0 / (1.0 + 0.3275911 * x);
+    const double y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-x * x);
+    return sign * y;
+}
+
+static double planar3_0_norm_pdf(double x, double sigma) {
+    return exp(-(x * x) / (2.0 * sigma * sigma)) / (sigma * sqrt(2.0 * M_PI));
+}
+
+static double planar3_0_norm_cdf(double x, double sigma) {
+    return 0.5 * (1.0 + planar3_0_erf(x / (sigma * M_SQRT2)));
+}
+
+static void planar3_0_solve_lloyd_max(double sigma, int levels, float * out) {
+    const double lo = -3.5 * sigma;
+    const double hi =  3.5 * sigma;
+    const double outer = 12.0 * sigma;
+    double c[PLANAR3_0_LEVELS];
+    for (int i = 0; i < levels; ++i) {
+        c[i] = lo + (hi - lo) * (i + 0.5) / levels;
+    }
+    for (int it = 0; it < 300; ++it) {
+        double next[PLANAR3_0_LEVELS];
+        double shift = 0.0;
+        for (int i = 0; i < levels; ++i) {
+            const double a = i == 0 ? -outer : 0.5 * (c[i - 1] + c[i]);
+            const double b = i == levels - 1 ? outer : 0.5 * (c[i] + c[i + 1]);
+            const double mass = planar3_0_norm_cdf(b, sigma) - planar3_0_norm_cdf(a, sigma);
+            if (mass > 1e-15) {
+                // integral of x*pdf over [a,b] is sigma^2 * (pdf(a) - pdf(b))
+                next[i] = sigma * sigma * (planar3_0_norm_pdf(a, sigma) - planar3_0_norm_pdf(b, sigma)) / mass;
+            } else {
+                next[i] = c[i];
+            }
+            const double d = fabs(next[i] - c[i]);
+            if (d > shift) {
+                shift = d;
+            }
+        }
+        memcpy(c, next, sizeof(c));
+        if (shift < 1e-12) {
+            break;
+        }
+    }
+    for (int i = 0; i < levels; ++i) {
+        out[i] = (float) c[i];
+    }
+}
+
+static const float * planar3_0_givens(void) {
+    static float table[QK_PLANAR3_0]; // cos, sin per pair
+    static bool init = false;
+    if (!init) {
+        uint64_t state = 42;
+        for (int i = 0; i < QK_PLANAR3_0/2; ++i) {
+            const uint64_t r = planar3_0_splitmix64(&state);
+            const double u = (double) (r >> 11) / (double) (1ull << 53);
+            const double t = u * 2.0 * M_PI;
+            table[2*i + 0] = (float) cos(t);
+            table[2*i + 1] = (float) sin(t);
+        }
+        init = true;
+    }
+    return table;
+}
+
+static const float * planar3_0_codebook(void) {
+    static float cb[PLANAR3_0_LEVELS];
+    static bool init = false;
+    if (!init) {
+        planar3_0_solve_lloyd_max(1.0 / sqrt((double) QK_PLANAR3_0), PLANAR3_0_LEVELS, cb);
+        init = true;
+    }
+    return cb;
+}
+
+// block diagonal 2x2 rotation over pairs of coordinates, the same table the quantizer uses
+void ggml_planar3_0_gen_rot(float * dst, int64_t n, bool inverse) {
+    GGML_ASSERT(n > 0 && n % 2 == 0);
+    GGML_ASSERT(n <= QK_PLANAR3_0);
+
+    const float * cs = planar3_0_givens();
+
+    memset(dst, 0, (size_t) n * n * sizeof(float));
+
+    for (int64_t i = 0; i < n/2; ++i) {
+        const float c = cs[2*i + 0];
+        const float s = cs[2*i + 1] * (inverse ? -1.0f : 1.0f);
+
+        dst[(2*i + 0)*n + (2*i + 0)] =  c;
+        dst[(2*i + 0)*n + (2*i + 1)] = -s;
+        dst[(2*i + 1)*n + (2*i + 0)] =  s;
+        dst[(2*i + 1)*n + (2*i + 1)] =  c;
+    }
+}
+
+void quantize_row_planar3_0_ref(const float * GGML_RESTRICT x, block_planar3_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_PLANAR3_0 == 0);
+
+    const float * cs = planar3_0_givens();
+    const float * cb = planar3_0_codebook();
+
+    for (int64_t ib = 0; ib < k/QK_PLANAR3_0; ++ib) {
+        const float * xb = x + ib*QK_PLANAR3_0;
+        block_planar3_0 * yb = y + ib;
+
+        float norm = 0.0f;
+        for (int j = 0; j < QK_PLANAR3_0; ++j) {
+            norm += xb[j]*xb[j];
+        }
+        norm = sqrtf(norm);
+        const float inv = norm > 1e-12f ? 1.0f/norm : 0.0f;
+        yb->norm = GGML_FP32_TO_FP16(norm);
+
+        uint8_t idx[QK_PLANAR3_0];
+        for (int i = 0; i < QK_PLANAR3_0/2; ++i) {
+            const float c = cs[2*i + 0];
+            const float s = cs[2*i + 1];
+            const float a = xb[2*i + 0]*inv;
+            const float b = xb[2*i + 1]*inv;
+            const float r0 = c*a - s*b;
+            const float r1 = s*a + c*b;
+
+            for (int t = 0; t < 2; ++t) {
+                const float v = t == 0 ? r0 : r1;
+                int best = 0;
+                float bd = fabsf(v - cb[0]);
+                for (int l = 1; l < PLANAR3_0_LEVELS; ++l) {
+                    const float d = fabsf(v - cb[l]);
+                    if (d < bd) {
+                        bd = d;
+                        best = l;
+                    }
+                }
+                idx[2*i + t] = (uint8_t) best;
+            }
+        }
+
+        for (int g = 0; g < PLANAR3_0_GROUPS; ++g) {
+            const uint8_t * ig = idx + 8*g;
+            const uint32_t w = (uint32_t) ig[0]
+                             | ((uint32_t) ig[1] << 3)
+                             | ((uint32_t) ig[2] << 6)
+                             | ((uint32_t) ig[3] << 9)
+                             | ((uint32_t) ig[4] << 12)
+                             | ((uint32_t) ig[5] << 15)
+                             | ((uint32_t) ig[6] << 18)
+                             | ((uint32_t) ig[7] << 21);
+            yb->qs[3*g + 0] = (uint8_t) ( w        & 0xFF);
+            yb->qs[3*g + 1] = (uint8_t) ((w >>  8) & 0xFF);
+            yb->qs[3*g + 2] = (uint8_t) ((w >> 16) & 0xFF);
+        }
+    }
+}
+
+void dequantize_row_planar3_0(const block_planar3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_PLANAR3_0 == 0);
+
+    const float * cb = planar3_0_codebook();
+
+    for (int64_t ib = 0; ib < k/QK_PLANAR3_0; ++ib) {
+        const block_planar3_0 * xb = x + ib;
+        float * yb = y + ib*QK_PLANAR3_0;
+
+        const float norm = GGML_FP16_TO_FP32(xb->norm);
+
+        float rot[QK_PLANAR3_0];
+        for (int g = 0; g < PLANAR3_0_GROUPS; ++g) {
+            const uint32_t w = (uint32_t) xb->qs[3*g + 0]
+                             | ((uint32_t) xb->qs[3*g + 1] << 8)
+                             | ((uint32_t) xb->qs[3*g + 2] << 16);
+            for (int t = 0; t < 8; ++t) {
+                const uint8_t i8 = (uint8_t) ((w >> (3*t)) & 0x7);
+                rot[8*g + t] = cb[i8];
+            }
+        }
+
+        // rotated space: the graph undoes the rotation once per token, on the weighted sum of V
+        for (int i = 0; i < QK_PLANAR3_0; ++i) {
+            yb[i] = rot[i]*norm;
+        }
+    }
+}
+
+size_t quantize_planar3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix) {
+    GGML_UNUSED(imatrix);
+    GGML_ASSERT(n_per_row % QK_PLANAR3_0 == 0);
+    quantize_row_planar3_0_ref(src, (block_planar3_0 *) dst, nrows*n_per_row);
+    return nrows * ggml_row_size(GGML_TYPE_PLANAR3_0, n_per_row);
+}
+
 size_t quantize_q2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
     if (!quant_weights) {
         quantize_row_q2_0_ref(src, dst, (int64_t)nrow*n_per_row);

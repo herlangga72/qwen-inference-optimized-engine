@@ -30,6 +30,10 @@ void quantize_row_q2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, in
     quantize_row_q2_0_ref(x, y, k);
 }
 
+void quantize_row_planar3_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_planar3_0_ref(x, y, k);
+}
+
 void quantize_row_q4_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
     quantize_row_q4_0_ref(x, y, k);
 }
@@ -217,6 +221,44 @@ void ggml_vec_dot_q2_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
         }
 
         sumf += d0 * sumi;
+    }
+
+    *s = sumf;
+}
+
+void ggml_vec_dot_planar3_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    const int qk = QK_PLANAR3_0;
+    const int nb = n / qk;
+
+    assert(n % qk == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_planar3_0 * GGML_RESTRICT x = vx;
+    const block_q8_0     * GGML_RESTRICT y = vy;
+
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; i++) {
+        // the same values dequantize_row_planar3_0 produces, so a dot over the cache
+        // and a dot over the dequantized cache agree
+        float xv[QK_PLANAR3_0];
+        dequantize_row_planar3_0(&x[i], xv, qk);
+
+        for (int k = 0; k < qk/QK8_0; k++) {
+            const block_q8_0 * GGML_RESTRICT yb = &y[i*(qk/QK8_0) + k];
+            const float d = GGML_CPU_FP16_TO_FP32(yb->d);
+
+            float sumi = 0.0f;
+            for (int j = 0; j < QK8_0; ++j) {
+                sumi += xv[k*QK8_0 + j]*(float) yb->qs[j];
+            }
+
+            sumf += d*sumi;
+        }
     }
 
     *s = sumf;
