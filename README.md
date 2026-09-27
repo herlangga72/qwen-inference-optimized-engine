@@ -1,12 +1,70 @@
-# llama.cpp (Qwen-only fork: disk-backed session KV store)
+# Qwen Inference Optimized Engine
 
-A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) for running Qwen models on machines whose
-GPU has no memory of its own. It adds a layered session KV store that parks idle sessions out of the
-compute arena onto disk and restores them on demand.
+A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp), scoped to the Qwen model family and
+optimized for machines whose GPU has no memory of its own. It adds a disk-backed session KV store so
+that one box can hold many concurrent Qwen sessions without keeping their KV cache in system RAM.
 
-Everything outside the KV store is upstream llama.cpp. The measurements behind this work are in
-`docs/research/`, the design is in `docs/superpowers/`, and the harnesses are in
+Upstream llama.cpp is MIT licensed and so is this. The measurements behind every claim on this page
+are in `docs/research/`, the designs are in `docs/superpowers/`, and the harnesses are in
 `scripts/research/kvstore/`.
+
+## How this differs from llama.cpp
+
+|  | upstream llama.cpp | this fork |
+| --- | --- | --- |
+| Architectures in `src/models/` | 156 files | 3 (`qwen35`, `qwen35moe`, `qwen4exp`, plus a shared `delta-net-base`) |
+| Size of `src/` | 3.7 MB | 1.8 MB |
+| KV types | `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `q5_0`, `q5_1`, `iq4_nl` | the same, plus `planar3_0`, a 3 bit type |
+| Park and unpark | host buffered, through `--slot-save-path` | `llama_state_seq_save_file_direct` and `llama_state_seq_load_file_direct`, streamed through `O_DIRECT` |
+| Store format | an unframed `LLAMA_STATE_SEQ` v3 stream | 4 KB blocks, 12 byte frame header carrying a per-save generation, `LLAMA_STATE_SEQ_VERSION` 4. Store files written by earlier versions are not readable. |
+
+The dropped architectures are not merely untested here. Their graph code is gone, so the engine only
+builds and only reasons about what this project runs. That is most of the difference in source size,
+and it is why a change to a shared path is cheaper to reason about here than upstream.
+
+## How inference works
+
+Qwen3.5-0.8B and Qwen3.6-35B-A3B are hybrid models, and the shape of that hybrid decides everything
+about memory. In the 35B, of 41 layers, 31 are gated delta net layers that carry a fixed size
+recurrent state, and 10 are full attention layers, one every fourth layer.
+
+- A session's footprint is therefore two different things: a fixed recurrent state term, measured at
+  62.8 MiB for the 35B against 19.3 MiB for the 0.8B, plus a per-token attention KV term that scales
+  with context. Only the second one grows with the conversation.
+- That fixed term is why parking has a floor. An otherwise empty 35B session still costs 62.8 MiB,
+  and context compaction cannot shrink it, because it is the delta net state and not the context.
+- One decode step walks the recurrent layers, which advance their state token by token, and the
+  attention layers, which read the session's KV. The MTP head that ships inside the 35B
+  (`nextn_predict_layers = 1`) is used on top for speculative decoding.
+
+A session lives in the GPU arena while it is active. When it goes idle it can be moved out to disk and
+moved back when it is needed again, and the store that does that is what most of this fork's work is
+about. Parking writes the recurrent state and the attention KV to one file through `O_DIRECT`, so a
+parked session costs no host memory, and unparking restores it into a context so that generation
+continues exactly as if the session had never left.
+
+## What we optimized
+
+| area | change | measured |
+| --- | --- | --- |
+| KV cache, V | `planar3_0`, a 3 bit type with rotated rows and a Givens table | a 98 byte block per 256 coordinates; cuts the KV slope 2.77x against f16 on the 35B |
+| KV cache, K | `q8_0` | 5440 B/token against 10240 at f16, on the 35B |
+| Session parking | disk store through `O_DIRECT`, 4 KB blocks, a per-save generation, verify after write | park and unpark with a 0 KiB resident delta on a 55 MiB state |
+| delta net output projection | declare `final_output` as `[value_dim, n_seq_tokens*n_seqs]` instead of 3D, at the three delta net output projections | Vulkan token generation, 1 token x 8 sequences: 2.2x faster. Vulkan prefill unchanged. CPU token generation about 1.3x slower, CPU prefill about 5% faster |
+| Recurrent state | return a view of the cache instead of gathering rows, when the active rows are already contiguous | removes a per-token gather and its write-back; outputs byte-identical to before |
+| MTP speculation | speculate with the model's own MTP head, no separate draft file | 1.27x on CPU, 1.36x on Vulkan, single stream |
+| Tokenizer | keep the merge rank table over string views into the vocab's own bytes | byte identical output, and the per-lookup allocations are gone |
+
+Two of these trade CPU for Vulkan, deliberately. The target is a Radeon 680M, where token generation
+was the bottleneck, and the delta net output projection change is 2.2x faster on Vulkan token
+generation against about 1.3x slower on CPU token generation: a bad trade on a CPU only box, a good one
+here.
+
+One thing did not work. Binding the GGUF's own pages to the Vulkan device with
+`VK_EXT_external_memory_host`, so that weights exist once in RAM and the GPU reads those pages
+directly, fails on this driver: RADV refuses to import a file backed host pointer at any size while it
+accepts an anonymous one on the same device. That was dropped and the enabling changes reverted,
+written up in `docs/research/11-uma-zero-copy-findings.md`.
 
 ## Why these changes exist
 
