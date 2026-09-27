@@ -146,6 +146,26 @@ compared byte for byte. Timestamps in the logs are the only thing stripped befor
 | the same on Vulkan0 (`-ngl 99`, all 84 layer assignments to Vulkan0) | identical text to pre-diet |
 | grep guard for removed backend headers, dirs and `GGML_*` options | no references left |
 
+### Delta-net output projection (2026-09-27)
+
+The delta-net output projection declares its activation as `[value_dim, n_seq_tokens*n_seqs]` instead
+of `[value_dim, n_seq_tokens, n_seqs]`, so the projections read their weight once per step instead of
+once per sequence. Same machine, both build trees rebuilt from the change. Full write-up in
+`docs/research/06-ssm-out-fix-results.md`.
+
+| check | result |
+| --- | --- |
+| CPU and Vulkan builds | 0 errors |
+| `test-llama-archs -s 1` qwen35 / qwen35moe / qwen4exp, CPU and Vulkan0 | all pass, NMSE 0 to 1.23e-07 vs CPU |
+| `test-backend-ops test --test-file` on the 35B graph at `-np 8`, Vulkan0 | both `linear_attn_out` shapes match the CPU reference |
+| `linear_attn_out`, 35B, Vulkan0, 1 token x 8 seqs | 823 us to 380 us, 2.2x |
+| `linear_attn_out`, 35B, Vulkan0, 64 tokens x 8 seqs | 3280 us, unchanged |
+| single stream (`n_seqs = 1`) | same tensor before and after, no change by construction |
+| `linear_attn_out`, 35B, CPU, 1 token x 8 seqs | about 1.3x slower, recorded as a known regression |
+
+No full-engine run: the change was verified on the exported graph at the real shapes and on the
+synthetic arch models.
+
 ## Deliberate retentions
 
 - `models/templates/*.jinja`: chat/autoparser test corpus, arch independent (the chat parsing tests
