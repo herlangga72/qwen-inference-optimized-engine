@@ -321,12 +321,14 @@ llama_kv_cache::llama_kv_cache(
         attn_rot_k =
             !attn_rot_disable &&
             n_embd_head_k_all > 0 &&
+            type_k != GGML_TYPE_PLANAR3_0 &&
             ggml_is_quantized(type_k) &&
             hparams.n_embd_head_k() % 64 == 0;
 
         attn_rot_v =
             !attn_rot_disable &&
             n_embd_head_v_all > 0 &&
+            type_v != GGML_TYPE_PLANAR3_0 &&
             ggml_is_quantized(type_v) &&
             hparams.n_embd_head_v() % 64 == 0;
     }
@@ -353,6 +355,20 @@ llama_kv_cache::llama_kv_cache(
 
             ggml_gen_hadamard(tmp);
         }
+    }
+
+    if (type_v == GGML_TYPE_PLANAR3_0) {
+        // one planar3_0 block is one KV row, so the rotation covers the whole head
+        const int64_t n_v = hparams.n_embd_head_v();
+        const int64_t n_blck = ggml_blck_size(GGML_TYPE_PLANAR3_0);
+
+        if (n_v != n_blck) {
+            GGML_ABORT("%s: planar3_0 V needs a head of %d, got %d\n", __func__, (int) n_blck, (int) n_v);
+        }
+
+        attn_rot_v_inv = true;
+        attn_rot_givens_inv.assign(n_v*n_v, 0.0f);
+        ggml_planar3_0_gen_rot(attn_rot_givens_inv.data(), n_v, /*inverse*/ true);
     }
 
     const char * LLAMA_KV_CACHE_DEBUG = getenv("LLAMA_KV_CACHE_DEBUG");
@@ -1464,6 +1480,20 @@ ggml_tensor * llama_kv_cache::build_input_v_rot(ggml_context * ctx) const {
     return res;
 }
 
+ggml_tensor * llama_kv_cache::build_input_v_rot_inv(ggml_context * ctx) const {
+    ggml_tensor * res = nullptr;
+
+    if (attn_rot_v_inv) {
+        const int64_t n_v = hparams.n_embd_head_v();
+
+        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_v, n_v);
+        ggml_set_input(res);
+        ggml_set_name(res, "attn_inp_v_rot_inv");
+    }
+
+    return res;
+}
+
 void llama_kv_cache::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const {
     const uint32_t n_tokens = ubatch->n_tokens;
     GGML_ASSERT(n_tokens == (int64_t) sinfo.size()*sinfo.n_stream());
@@ -1817,6 +1847,13 @@ void llama_kv_cache::set_input_v_rot(ggml_tensor * dst) const {
     GGML_ASSERT(attn_rot_hadamard.count(dst->ne[0]));
 
     memcpy(dst->data, attn_rot_hadamard.at(n_rot).data(), ggml_nbytes(dst));
+}
+
+void llama_kv_cache::set_input_v_rot_inv(ggml_tensor * dst) const {
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+    GGML_ASSERT(attn_rot_v_inv && (int64_t) attn_rot_givens_inv.size() == dst->ne[0]*dst->ne[1]);
+
+    memcpy(dst->data, attn_rot_givens_inv.data(), ggml_nbytes(dst));
 }
 
 bool llama_kv_cache::has_cell_ext() const {
@@ -2880,6 +2917,10 @@ ggml_tensor * llama_kv_cache_context::build_input_v_rot(ggml_context * ctx) cons
     return kv->build_input_v_rot(ctx);
 }
 
+ggml_tensor * llama_kv_cache_context::build_input_v_rot_inv(ggml_context * ctx) const {
+    return kv->build_input_v_rot_inv(ctx);
+}
+
 void llama_kv_cache_context::set_input_k_shift(ggml_tensor * dst) const {
     kv->set_input_k_shift(dst);
 }
@@ -2906,6 +2947,10 @@ void llama_kv_cache_context::set_input_k_rot(ggml_tensor * dst) const {
 
 void llama_kv_cache_context::set_input_v_rot(ggml_tensor * dst) const {
     kv->set_input_v_rot(dst);
+}
+
+void llama_kv_cache_context::set_input_v_rot_inv(ggml_tensor * dst) const {
+    kv->set_input_v_rot_inv(dst);
 }
 
 void llama_kv_cache_context::get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const {

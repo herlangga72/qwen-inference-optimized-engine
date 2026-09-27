@@ -223,6 +223,7 @@ public:
 
     ggml_tensor * build_input_k_rot(ggml_context * ctx) const;
     ggml_tensor * build_input_v_rot(ggml_context * ctx) const;
+    ggml_tensor * build_input_v_rot_inv(ggml_context * ctx) const;
 
     void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
     void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
@@ -234,6 +235,7 @@ public:
 
     void set_input_k_rot(ggml_tensor * dst) const;
     void set_input_v_rot(ggml_tensor * dst) const;
+    void set_input_v_rot_inv(ggml_tensor * dst) const;
 
     // true if llama_kv_cell_ext holds information that has to survive a state save/restore
     bool has_cell_ext() const;
@@ -284,6 +286,10 @@ private:
 
     // pre-computed hadamard martrices
     std::unordered_map<int64_t, std::vector<float>> attn_rot_hadamard;
+
+    // planar3_0 V stores rotated rows, so the graph undoes the rotation on the attention output
+    bool attn_rot_v_inv = false;
+    std::vector<float> attn_rot_givens_inv;
 
     // env: LLAMA_KV_CACHE_DEBUG
     int debug = 0;
@@ -420,6 +426,7 @@ public:
 
     ggml_tensor * build_input_k_rot(ggml_context * ctx) const;
     ggml_tensor * build_input_v_rot(ggml_context * ctx) const;
+    ggml_tensor * build_input_v_rot_inv(ggml_context * ctx) const;
 
     void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const;
     void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const;
@@ -430,6 +437,7 @@ public:
 
     void set_input_k_rot(ggml_tensor * dst) const;
     void set_input_v_rot(ggml_tensor * dst) const;
+    void set_input_v_rot_inv(ggml_tensor * dst) const;
 
     // see llama_kv_cache::get_prev_tokens()
     void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;
