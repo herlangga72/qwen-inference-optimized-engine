@@ -158,3 +158,61 @@ types.
 No code has been changed by this investigation. Two plausible fixes were tested as hypotheses first and
 both were disproved by measurement, so nothing was worth committing. The next concrete step is the
 `CONCAT` path, not the MoE kernel.
+
+---
+
+## Follow-up 2: the concat experiment, and an instrument caveat
+
+Date: 2026-09-27, same session
+
+### The third hypothesis, also disproved
+
+The concat shader assigns with a select:
+
+```glsl
+    data_d[get_doffset() + dst_idx] = D_TYPE(is_src0 ? data_a[get_aoffset() + src0_idx]
+                                                     : data_b[get_boffset() + src1_idx]);
+```
+
+Both loads are written unconditionally, and for the source that is not wanted the index underflows, so
+the suspicion was two loads per element, one of them wild. The generator already has a branch variant,
+`OPTIMIZATION_ERROR_WORKAROUND`, used for `get_rows` and the f16 copies, and for a dim 0 concat the split
+falls on a workgroup boundary so that branch would be uniform rather than divergent. It was enabled for
+`concat_i32` and measured:
+
+| variant | CONCAT per call |
+| --- | --- |
+| select, first measurement | 5380 us |
+| branch, three runs | 5367, 5294, 5313 us |
+
+The change was reverted. The double load is not the cost.
+
+### The instrument may not be attributing these two ops independently
+
+`CONCAT` and `GATED_DELTA_NET` both come out at 30 calls and both at about 5.38 ms per call, in the same
+runs:
+
+| op | calls | us per call |
+| --- | --- | --- |
+| CONCAT | 30 | 5367 |
+| GATED_DELTA_NET | 30 | 5378 |
+
+They sit next to each other in the graph, once per state layer, and the perf logger takes timestamps
+around dispatches in one command buffer. Two different ops agreeing to within 0.2 percent is more likely
+to mean the window includes a shared dependency or barrier than to mean two separate ops cost the same.
+
+So the previous section's claim that `CONCAT` runs at 23 percent of the ceiling with 4.4x headroom is
+**not verified**. It rests on an attribution that has not been tested. Testing it is cheap: time a
+variant where the concat is removed entirely, or instrument the two ops separately with a barrier between
+them, and see whether the 5.38 ms follows the concat or stays with whatever it is waiting for.
+
+Flash attention, as a cross-check on the instrument: `-fa 0` measures pp512 at 232.69 against 230.27 with
+`-fa 1`, so the 1.2 percent the profile attributes to it is consistent with turning it off entirely.
+
+### Where this leaves the prefill work
+
+Three hypotheses have now been tested and all three are disproved: expert slot bookkeeping, batch
+amortisation, and the concat double load. The one remaining number with headroom is the MoE expert
+matmul at 7 GB/s and 124 FLOP per byte, whose bound looks like the `iq2_s` dequantize path. The honest
+next step is not to optimise anything yet but to test the instrument on the two ops it may be
+mis-attributing, because every remaining target except the MoE line depends on those numbers.
