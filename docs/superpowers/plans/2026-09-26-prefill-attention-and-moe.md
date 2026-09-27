@@ -1,9 +1,11 @@
 # Prefill Attention and MoE Implementation Plan
 
-**Outcome: not recorded.** There is no results document for this plan in `docs/research/`, and the
-checkboxes below are all open. Whether any of these changes landed is not known from the docs, and
-this line says so rather than guessing. The two documents that motivate the plan are
-`docs/research/03-stage3-stage4.md` and `docs/research/04-stage5-diagnosis.md`.
+**Outcome: nothing implemented, and the ordering in this plan is wrong.** A profile of the prefill pass
+now exists, `docs/research/26-prefill-vulkan-profile.md`, and it puts flash attention at 1.2 percent of
+the pass while the MoE expert matmul is 47 percent and runs at about a third of the efficiency the dense
+matmuls reach on the same GPU. Task 2 below is the first task and the measured smallest lever; task 4 is
+the largest. Re-ordering is the cheapest change available here. The problem statement agreed: a change
+that does not beat the in-situ baseline gets reverted, and now the baseline says where to look.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement
 > this plan task by task, or superpowers:executing-plans with review checkpoints between tasks. Steps use
 > checkbox syntax for tracking. Do not commit without explicit approval, and never push.
