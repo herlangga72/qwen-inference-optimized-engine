@@ -335,3 +335,60 @@ State: **nothing implemented.** The baseline is taken, the semantics are pinned 
 byte LUT in the shared memory budget of `ggml_vk_matmul_int_shmem_support`, the generator entries, and the
 host type list. That is a kernel addition of a few hundred lines with a verification step, and it should be
 done in one sitting rather than half.
+
+---
+
+## Does moving `iq2_s` to int8 degrade the values?
+
+Date: 2026-09-27, same session
+
+**The weights do not degrade at all.** The dequantized weight is `grid_value * scale`, and the int8 path
+stores `grid_value` as int8 and keeps `scale` outside the integer domain. The largest grid magnitude in
+`iq2s_grid` is 43, so every weight fits int8 exactly, with no rounding, and the sign is applied exactly by
+the branchless `(v ^ m) - m`. The accumulation is `dotPacked4x8EXT` into int32, and 32 terms of at most 43
+by 127 is about 175 thousand, nowhere near overflow. So the integer side is exact, and the fp16 path it
+replaces is not more precise about the weights either: it also represents these small integers exactly.
+
+**The activation is what changes.** The int path quantizes the activation to `block_q8_1`, which is 32 int8
+values plus an fp16 scale per block, against one fp16 scale and a sum term. The fp16 path leaves the
+activation in fp16. That is the whole trade.
+
+The important context is that this trade is already made everywhere else in this model. The dense attention
+projections run `q6_K` on the int path, and of the three expert tensors, `iq3_s` and `iq4_xs` are already
+on it. So the int path is not a new precision decision for this model, it is the existing one, and
+`iq3_s` in particular is the other half of the same MoE:
+
+| expert tensor | calls | path today |
+| --- | --- | --- |
+| `iq2_s` | 78 | fp16 |
+| `iq3_s` | 39 | int8 |
+| `iq4_xs` | 3 | int8 |
+
+And the existing evidence on what the int path costs: with `iq3_s` and `iq4_xs` already on it, the model's
+greedy output is byte identical to the CPU reference. Adding `iq2_s` to the same path does not introduce a
+new kind of approximation, it removes the one type that was not using it.
+
+Order of magnitude for the activation change: `q8_1` picks its scale as half the block maximum, so a
+single element is off by at most about 1 part in 254 of the block peak, and the error across the 32 terms
+of a dot product partly cancels. Against a model whose expert weights are already 2 bit, that is a second
+order term rather than the dominant one.
+
+### Baseline for the degradation number
+
+| measurement | value |
+| --- | --- |
+| PPL, 24 chunks of 512, technical prose, fp16 path | 5.9148 +/- 0.19103 |
+| greedy output vs CPU, 180 word prompt, 8 tokens | byte identical, 938 bytes |
+
+The perplexity uncertainty is 3.2 percent, which is larger than the effect being looked for. A final
+estimate PPL comparison at this size cannot resolve a sub one percent change. The two instruments that
+can:
+
+- The greedy output equality, which is exact and deterministic, and which any real error in the sign or
+  scale handling would break on the first token.
+- A paired comparison, running both builds over the same chunks and comparing chunk by chunk, so the
+  corpus variance cancels instead of dominating.
+
+So the answer to the question asked is: the values are not degraded, the activation is quantized the same
+way the rest of the model already quantizes it, and the measurement that settles it is the exact output
+comparison rather than the perplexity number.
