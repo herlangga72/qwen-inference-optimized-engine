@@ -434,3 +434,58 @@ Nothing was changed in the tree. The work is these six edits plus a build and a 
 6. Build, then verify against the 938 byte CPU reference, then bench pp512 against 231.52.
 
 Step 2 is the one that must not be rushed, because the two-scale split is silent when wrong.
+
+---
+
+## The int dot path was implemented, verified, and is not faster
+
+Date: 2026-09-27, same session
+
+Implemented all six edits, built clean, and ran the two gates.
+
+**Correctness: passed.** The MoE output with `iq2_s` on the int dot path is byte identical to the CPU
+reference, 938 bytes, same prompt and seed. That means the grid lookup, the sign handling, the two-scale
+split and the packing are all right, including the part predicted to fail silently.
+
+**Speed: nothing.** Same session, same command, two repetitions before and after:
+
+| measurement | before | after |
+| --- | --- | --- |
+| pp512 | 231.52 +/- 0.42 t/s | 231.29 +/- 0.33 t/s |
+| `MUL_MAT_ID iq2_s` per call | 9561 to 9794 us | 9413 to 9662 us |
+| `MUL_MAT_ID iq2_s` rate | 877 to 898 GFLOPS/s | 889 to 912 GFLOPS/s |
+
+The op itself moved about 1.5 percent, which is inside the variation between runs, and the pass moved not
+at all. The projected 15 percent is not there.
+
+**So the change was reverted**, by the rule the prefill plan sets out: a change that does not beat the
+in-situ baseline is recorded and reverted. The tree is byte identical to before it (`git diff` against
+`6c636f124` is empty) and the built variant is gone from the artifact. The code is preserved in history if
+it is ever wanted:
+
+- `6a4e23e5c` the implementation
+- `fc2bb21cd` the revert
+
+### Why the hypothesis was wrong
+
+The projection came from comparing rates across types: `iq2_s` at 878 GFLOPS/s against `iq3_s` at 1230 and
+`iq4_xs` at 1453, with the two fast types present in the int dot type list and `iq2_s` absent. The
+correlation was real and the conclusion drawn from it was wrong, because the difference between those types
+is not the dot domain. It is how much work the dequantize does per value:
+
+| type | per value dequantize work |
+| --- | --- |
+| `iq4_xs` | one nibble and a 16 byte LUT |
+| `iq3_s` | one grid entry per 4 values, one sign bit per value, one scale per 32 |
+| `iq2_s` | one grid entry per 8 values, one sign bit per value, **two** scales per 32 |
+
+Moving `iq2_s` to the int dot path does not remove any of that work, because `block_a_to_shmem` still has
+to run the grid lookup, extract the eight sign bits and apply the two scales to build the int8 block. It
+only makes the multiply that follows cheaper, and the multiply was not the bottleneck. The cost is in the
+dequantize, in both domains.
+
+That is the fourth hypothesis in this document to be disproved by measurement, after expert slot
+bookkeeping, batch amortisation, and the concat double load. The pattern is consistent and worth stating:
+in every case the candidate was plausible from the code and wrong when measured, and in this one the
+mistake was instrumented by a cross-type rate comparison, which is exactly the comparison this document had
+already warned about two sections earlier.
