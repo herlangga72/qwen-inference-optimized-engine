@@ -1,7 +1,7 @@
 # Asymmetric KV cache with a planar3 V type (RotorQuant), CPU first
 
 Date: 2026-09-26
-Status: implemented, CPU path verified, Vulkan path has its own plan
+Status: implemented on CPU and Vulkan, Vulkan speed gate still open
 Outcome: `GGML_TYPE_PLANAR3_0` is in the tree as type 43. The CPU path is built and verified against
 the Rust reference implementation byte for byte, including the packing, the codebook, the Givens
 table and the rotation direction through `ggml_mul_mat`. Results in

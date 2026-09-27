@@ -1,8 +1,10 @@
 # KV planar3 V cache (plan 2, Vulkan) Implementation Plan
 
-**Outcome: not started.** Checked in the code, not assumed: `planar3` appears under `ggml/src/ggml-cpu/`
-and nowhere under `ggml/src/ggml-vulkan/`, so the Vulkan flash attention path does not consume the
-type yet. There is no results document for this plan. The checkboxes below are genuinely open.
+**Outcome: implemented, with the speed gate still open.** The type runs on Vulkan and CPU and Vulkan
+produce byte identical text with it. The plan understated the work: it covered the read side only, and
+the write side needs a GPU quantizer, because V is computed on the device. Results, including the
+decode speeds at four depths, are in `docs/research/25-kv-planar3-vulkan-results.md`. The f16 baseline
+that the speed gate is written against was started and stopped on request, so no speedup is claimed.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let the Vulkan flash attention path consume a `planar3_0` V cache, then measure the speed premise at 16384 and 32768 depth, where the byte saving actually lands.
