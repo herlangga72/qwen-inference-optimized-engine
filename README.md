@@ -134,9 +134,14 @@ to work after it is sent to the upstream project. Nothing here is sent there, so
 asked to review, merge or maintain any of it, and no maintainer time is consumed. What is owed instead
 is honesty that the fork diverges, which is what this section is for.
 
-Two inherited files are upstream documentation rather than the policy of this project:
-`CONTRIBUTING.md` and `AGENTS.md`. Both are still in the tree, and both describe how to contribute to
-llama.cpp, which this project does not do.
+The agentic coding configuration that upstream ships has been removed from this fork: `AGENTS.md`,
+`CLAUDE.md`, `.gemini/settings.json` and `.pi/gg/SYSTEM.md`. Those files exist to make AI coding agents
+work under upstream's rules, which this project does not follow, so keeping them would have left the
+tree quoting one policy while the project ran on another. They remain in the git history if anyone needs
+to read them.
+
+`CONTRIBUTING.md` is left in place. It is inherited upstream documentation rather than this project's
+policy, and it is part of the upstream tree.
 
 History and licence are unaffected. The full upstream history is present, llama.cpp is MIT licensed
 and so is this, and the fork keeps `origin` pointed at `ggml-org/llama.cpp` so it can pull upstream
