@@ -1155,3 +1155,44 @@ element:
    making it cheaper, and it is the larger change.
 
 Both are recorded as work rather than as results.
+
+---
+
+## Correction: the concat rate depends on the prompt length
+
+Date: 2026-09-28, same session
+
+The previous section calls the concat a bandwidth failure at 5.9 GB/s against a 44.5 GB/s ceiling. That is
+measured at pp512 only. Changing nothing but the prompt length:
+
+| prompt | calls | per call | volume | achieved rate |
+| --- | --- | --- | --- | --- |
+| pp128 | 30 | 399.4 us | 8.5 MB | **21.3 GB/s**, 48 percent of the ceiling |
+| pp512 | 30 | 5851.5 us | 33.8 MB | **5.9 GB/s**, 13 percent |
+
+Four times the volume costs 14.7 times the time, so the achieved rate falls by 3.6 times as the volume grows.
+A kernel bound by its own instruction cost, which is what the per element divisions and the missing
+vectorization would imply, would hold its rate as the volume grows. So at least part of the pp512 figure is
+not the kernel: it is contention with the memory traffic of the surrounding graph, buffer placement, or a
+throttling effect, and this measurement does not separate them.
+
+The 7.5 times gap quoted above is therefore wrong as a kernel property. The defensible statements are that
+the kernel reaches 48 percent of the ceiling at pp128, that the pp512 cost is 171 ms per pass, and that the
+difference between the two is unexplained.
+
+This matters for the fix. A rewrite could plausibly recover up to 3.6 times, turning 171 ms into about 48 ms
+per pass, but only if the pp512 case can be brought to the pp128 rate, and this measurement cannot show that.
+The cheap next step, before writing a specialization, is to find out which of the two it is, for example by
+timing the concat when the rest of the graph is not saturating memory.
+
+## hoist_row_ids is on, so there is no ids scan to remove
+
+The condition in `ggml_vk_mul_mat_id_q_f16` is `n_as <= 1024`, `nei0 <= 0xffff`, `nei1 <= 0xffff`, and
+`(2 * n_as + 1 + nei0 * nei1) * 4` within `maxStorageBufferRange`. For this model that is 256, 8, 512 and
+18436 bytes, so all four hold and the row ids are precomputed once per pass by `count_experts`. Each
+workgroup then reads the 16 entries it needs rather than scanning the whole ids tensor.
+
+So the ids scan noted earlier as a possible cost does not happen. The remaining item on that list is the y
+over dispatch, 16 workgroups to do 1 or 2 of work, which exits at the top of `main` on `data_expert_count`
+and is bounded by the dispatch rate: about 0.2 ms per call, or 34 ms per pass. The host cannot reduce that
+without reading the expert counts back, which would cost a synchronization.
