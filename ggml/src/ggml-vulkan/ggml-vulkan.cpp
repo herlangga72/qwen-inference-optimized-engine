@@ -2600,7 +2600,18 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
 #endif
 
         std::vector<vk_tile_config> tc_id = {{s_warptile_id, s_wg_denoms, s_align}, {m_warptile_id, m_wg_denoms, m_align}, {l_warptile_id, l_wg_denoms, l_align}};
-        std::vector<vk_tile_config> tc_mmqid = {{s_warptile_mmqid, s_mmq_wg_denoms, s_align}, {m_warptile_mmqid, m_mmq_wg_denoms, m_align}, {l_warptile_mmqid, l_mmq_wg_denoms, l_align}};
+        // The shader already skips warps whose columns are all padding, through
+        // required_warp_c = (_ne1 - ic * BN + WN - 1) / WN, so the waste left is at warp granularity: a
+        // warp spans WN columns while an expert receives about 16. Halve WN and BN together, leaving WM
+        // alone. With BM 64, WM 32, WN 16 and BN 32 there are two warps along M and two along N, so
+        // BN = WN * 2 holds, WNITER = (WM * WN) / (WARP * TM * TN * WMITER) = 512 / 512 = 1, and the
+        // thread grid is (WM / WMITER / TM) * (WN / WNITER / TN) = 4 * 8 = 32 = WARP. The medium entry
+        // shares the dense family's denoms, so it needs its own.
+        std::vector<uint32_t> m_warptile_mmqid_narrow = m_warptile_mmqid;
+        m_warptile_mmqid_narrow[2] = 32; // BN, down from 64
+        m_warptile_mmqid_narrow[5] = 16; // WN, down from 32
+        std::array<uint32_t, 3> m_mmqid_wg_denoms_narrow = { m_warptile_mmqid_narrow[1], m_warptile_mmqid_narrow[2], 1 };
+        std::vector<vk_tile_config> tc_mmqid = {{s_warptile_mmqid, s_mmq_wg_denoms, s_align}, {m_warptile_mmqid_narrow, m_mmqid_wg_denoms_narrow, m_align}, {l_warptile_mmqid, l_mmq_wg_denoms, l_align}};
 
         if (device->fp16) {
             // FP16 subgroup path - with dot2 runtime selection

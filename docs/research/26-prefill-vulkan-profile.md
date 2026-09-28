@@ -882,3 +882,78 @@ consistent at four warps along M and one along N, plus a dedicated denom triple 
 shares `m_mmq_wg_denoms` with the dense family. It must be gated on perplexity, since the perf logger
 reports its rate from the nominal shape and the last grid experiment looked like a 68 percent win while
 computing one thirty-second of the work.
+
+---
+
+## The medium column tile, narrowed at warp granularity, is a real win
+
+Date: 2026-09-28, same session
+
+This is the first change in this document that is correct and faster.
+
+### The change
+
+The medium entry of `tc_mmqid` in the subgroup branch, which is the tile this op actually selects, is
+narrowed in the column direction, with its own denom triple because the medium entry shares the dense
+family's:
+
+- BN 64 to 32
+- WN 32 to 16
+- WM left alone at 32
+
+### The measurements
+
+| quantity | baseline | with the change |
+| --- | --- | --- |
+| perplexity on prose.txt | 6.0495 +/- 0.36037 | 6.0495 +/- 0.36037, three separate runs |
+| `MUL_MAT_ID iq2_s` per call | 9542 / 9780 us | 7230 / 7042 us |
+| 78 calls per pass | 762 ms | 551 ms |
+| reported op rate | 878 / 900 GFLOPS/s | 1187 / 1219 GFLOPS/s |
+| pp512 | 231.52 / 231.87 | 253.81, then 255.10 +/- 0.55 |
+| reported op rate against the 6.7 TFLOPS/s fp16 peak | well under | under |
+
+So about 211 ms of a 2220 ms pass, and 10 percent on pp512.
+
+Perplexity is expected to be bit identical rather than merely close: the change moves which warp computes
+which column, and does not change the order in which k is accumulated for any given output element. That is
+consistent with it matching to four decimal places on three runs.
+
+### Why WN is the lever and not BN
+
+The shader already refuses to compute padding warps:
+
+```
+required_warp_c = (_ne1 - ic * BN + WN - 1) / WN;
+if (warp_c < required_warp_c) { ... compute ... }
+```
+
+So a 64 wide tile holding 16 useful columns does not spend four times the work, it spends the work of one
+WN wide warp block. WN was 32 against about 16 useful columns, a factor of two, and that factor is what
+halving it recovered. BN has to follow WN because the warp grid requires BN to equal WN times the number of
+warps along N.
+
+### Why the three earlier attempts did not find this
+
+- The first narrow tile experiment edited the **small** entry, `s_warptile_mmqid`, with denoms 32. The probe
+  later showed this op selects the medium entry with denoms 64, so that experiment measured an unused tile.
+- The second set WM to 16 while WN was 16, giving
+  `WNITER = (WM * WN) / (WARP * TM * TN * WMITER) = 256 / 512 = 0`, so the N loop never executed at all.
+- The third left WM alone but set WN 32 alongside BN 32, breaking `BN = WN * warps along N`.
+
+The second and third both reported rates between 26 and 104 TFLOPS/s against a peak of about 6.7. **A
+reported rate above the device peak means the change is skipping work, and it is cheaper to check than a
+perplexity run.** That single check would have caught both immediately, and it is now the first thing to
+look at for any tile change.
+
+### What bounds further narrowing
+
+`WNITER >= 1` requires `WM * WN >= WARP * TM * TN * WMITER`, which with tm_m 4 and tn_m 2 is 512. WM is
+fixed at 32 by the warp grid, so WN 16 is the floor: WN 8 gives 256 and breaks the loop. Getting below that
+needs TM or TN to change, which are device properties rather than tile ones.
+
+### Not measured
+
+pp2048 at `ub 512` has no baseline in this document, so whether the gain holds on longer prompts is
+unconfirmed. The changed build measures 176.85 +/- 0.50 there, which is below pp512 for this workload
+because prefill attention is quadratic in the sequence, and comparing it to nothing would be the same
+mistake this document keeps recording.
