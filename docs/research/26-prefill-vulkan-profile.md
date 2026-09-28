@@ -1249,3 +1249,41 @@ Smaller micro batch is monotonically worse, even though it makes the concat 3.7 
 because the matmul calls lose more than the concat gains. Consistent with the earlier finding that a larger
 micro batch is not a lever; this confirms it from the other direction. The absolute values are from the
 drifted state and should not be compared with the recorded 254.8.
+
+---
+
+## Correction: the drift is the core clock, and the check must be taken under load
+
+Date: 2026-09-28, same session
+
+The previous section blames the memory clock. That was read at idle and describes nothing about a run, which
+is the same mistake as trusting an instrument without checking what it covers. Sampled *during* a run that
+measured 219.82 +/- 1.14:
+
+| t | memory clock | core clock |
+| --- | --- | --- |
+| 4s | 2400 MHz | 533 MHz |
+| 8s | 1000 MHz | 533 MHz |
+| 12s | 2400 MHz | 533 MHz |
+| 16s | 2400 MHz | 1504 MHz |
+| 20s | 2400 MHz | 533 MHz |
+| 24s | 2400 MHz | 1971 MHz |
+| 28s | 2400 MHz | 1773 MHz |
+| 32s | 2400 MHz | 1773 MHz |
+
+So the fabric runs at its full 2400 MHz, apart from a single transient dip to 1000, and the **core clock** is
+what moves: 533 to 1971 against a 2200 maximum. The 1000 MHz memory figure seen earlier was simply the idle
+state, which is what the hardware selects when nothing is running.
+
+The drift between the two windows is therefore in the core clock, and the likely cause is the APU power
+policy responding to load the GPU does not control, with VS Code, `baloo_file` and a 3.3 GiB swap in use at
+the same time. It is recorded as correlated rather than as established, because a single sampling series
+cannot separate a power policy from background load.
+
+### The check to use
+
+`pp_dpm_sclk` and `pp_dpm_mclk` both have to be sampled **while a run is in flight**. Reading them at idle
+reports the idle state and will mislead, as it did here. The practical rule is unchanged and is the reason
+none of the recorded results are affected: interleave A and B so that drift cancels, as done for the MoE
+change, where the baseline and the change were measured inside the same window and the difference was ten
+percent against a per run spread under one.
