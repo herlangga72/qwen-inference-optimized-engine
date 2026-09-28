@@ -9680,22 +9680,34 @@ void ggml_compute_forward_flash_attn_back(
 static void ggml_compute_forward_ssm_conv_f32(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
-    const ggml_tensor * src0 = dst->src[0]; // conv_x
+    const ggml_tensor * src0 = dst->src[0]; // conv_x, or the new input when src[2] carries the state
     const ggml_tensor * src1 = dst->src[1]; // conv1d.weight
+    const ggml_tensor * src2 = dst->src[2]; // optional state, {d_conv - 1, d_inner, n_s}
 
     const int ith = params->ith;
     const int nth = params->nth;
 
     const int nc  = src1->ne[0]; // d_conv
-    const int ncs = src0->ne[0]; // d_conv - 1 + n_t
+    const int ncs = src0->ne[0]; // d_conv - 1 + n_t, or n_t when src2 is set
     const int nr  = src0->ne[1]; // d_inner
     const int n_t =  dst->ne[1]; // tokens per sequence
     const int n_s =  dst->ne[2]; // number of sequences in the batch
+
+    // leading taps that come from the state instead of from src0
+    const int n_st   = src2 != nullptr ? (int) src2->ne[0] : 0;
+    const int st_row = src2 != nullptr ? (int) src2->ne[0] : 0; // row stride of the state, in floats
 
     GGML_ASSERT( dst->ne[0] == nr);
     GGML_ASSERT(src0->nb[0] == sizeof(float));
     GGML_ASSERT(src1->nb[0] == sizeof(float));
     GGML_ASSERT(src0->nb[1] == src0->ne[0]*sizeof(float));
+    if (src2 != nullptr) {
+        GGML_ASSERT(src2->ne[0] == nc - 1);
+        GGML_ASSERT(src2->ne[1] == nr);
+        GGML_ASSERT(src2->ne[2] == n_s);
+        GGML_ASSERT(src2->nb[0] == sizeof(float));
+        GGML_ASSERT(src2->nb[1] == src2->ne[0]*sizeof(float));
+    }
 
     // rows per thread
     const int dr = (nr + nth - 1)/nth;
@@ -9713,6 +9725,12 @@ static void ggml_compute_forward_ssm_conv_f32(
             const float * c = (const float *) ((const char *) src1->data + ir0*(src1->nb[1])); // {d_conv, d_inner}
             float * x = (float *) ((char *) dst->data + ir0*(dst->nb[0]) + i2*(dst->nb[1]) + i3*(dst->nb[2])); // {d_inner, n_t, n_s}
 
+            // with a separate state the window is the tail of the state followed by src0
+            const float * st = src2 != nullptr
+                ? (const float *) ((const char *) src2->data + ir0*(src2->nb[1]) + i3*(src2->nb[2]))
+                : nullptr;
+            const int n_tap_st = st != nullptr ? MAX(0, MIN(nc, n_st - i2)) : 0;
+
             // TODO: transpose the output for smaller strides for big batches?
             // d_inner
             for (int i1 = 0; i1 < ir; ++i1) {
@@ -9721,8 +9739,17 @@ static void ggml_compute_forward_ssm_conv_f32(
                 float sumf = 0.0f;
 
                 // d_conv
-                for (int i0 = 0; i0 < nc; ++i0) {
-                    sumf += s[i0 + i1*ncs] * c[i0 + i1*nc];
+                if (st != nullptr) {
+                    for (int i0 = 0; i0 < n_tap_st; ++i0) {
+                        sumf += st[(i2 + i0)*st_row + i1] * c[i0 + i1*nc];
+                    }
+                    for (int i0 = n_tap_st; i0 < nc; ++i0) {
+                        sumf += s[i0 - n_st + i1*ncs] * c[i0 + i1*nc];
+                    }
+                } else {
+                    for (int i0 = 0; i0 < nc; ++i0) {
+                        sumf += s[i0 + i1*ncs] * c[i0 + i1*nc];
+                    }
                 }
                 x[i1] = sumf;
             }

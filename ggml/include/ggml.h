@@ -2527,6 +2527,15 @@ extern "C" {
             struct ggml_tensor  * sx,
             struct ggml_tensor  * c);
 
+    // Same convolution, but the (d_conv - 1) leading rows of the window come from a separate state
+    // tensor rather than from the front of sx, so the caller never has to materialise the joined window.
+    // st is {d_conv - 1, d_inner, n_s} and sx is {n_t, d_inner, n_s}, and the output is {d_inner, n_t, n_s}.
+    GGML_API struct ggml_tensor * ggml_ssm_conv_state(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * st,
+            struct ggml_tensor  * sx,
+            struct ggml_tensor  * c);
+
     GGML_API struct ggml_tensor * ggml_ssm_scan(
             struct ggml_context * ctx,
             struct ggml_tensor  * s,
