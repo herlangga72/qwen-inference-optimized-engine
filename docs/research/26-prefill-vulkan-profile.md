@@ -1101,3 +1101,57 @@ up projections, m 512 and k 2048, gained 1.35 times. The down projection, m 2048
 percent, so its time is not in the column work, and the most likely reason is that both ops stream the same
 weight bytes and the down projection is closer to streaming bound, where narrowing a column tile changes
 nothing.
+
+---
+
+## CONCAT runs at 5.9 GB/s against a measured 44.5 GB/s ceiling
+
+Date: 2026-09-28, same session
+
+CONCAT is 8.4 percent of the pass, 30 calls at about 5.7 ms each. That is 171 ms for what looks like a copy,
+so both the volume and the ceiling were measured rather than estimated.
+
+### The volume
+
+A probe in `ggml_vk_concat` printed the shapes, first call and identical thereafter:
+
+```
+[concat] dim=0 src0=3x8192x1 src1=512x8192x1 dst=515x8192x1 moved=16.09 MiB type=f32
+```
+
+That is the GDN conv state, 3 previous positions by 8192 channels, concatenated with the current qkv, 512 by
+8192. Per call the traffic is 16.88 MB read plus 16.88 MB written, so 33.8 MB. At 5.7 ms per call that is
+**5.9 GB/s**.
+
+### The ceiling
+
+`scripts/research/membw.c` rebuilt with `-fopenmp`, 8 threads, three runs: 39.34, 41.79, 44.53 GB/s, best
+**44.53 GB/s**. So the concat moves data at **13 percent** of what this machine does on a plain copy. Per
+pass the 30 calls are 171 ms, and at half the ceiling they would be about 45 ms.
+
+Across 30 layers that is 1.01 GB of traffic per pass just for these concatenations. At the machine ceiling it
+is 23 ms of unavoidable work, against 171 ms now.
+
+### Why the kernel is slow
+
+`concat.comp` is a generic elementwise kernel that copies **one 4 byte element per thread** and does this per
+element:
+
+- three integer divisions by runtime divisors, `idx / (p.ne22*p.ne21*p.ne20)` and two more, to recover the
+  four indices
+- a private array `o[4]` indexed by the runtime `dim`, which typically forces local memory
+- a ternary load that can issue a load from both sources
+- no vectorization at all, so every read and write is 4 bytes wide
+
+### Two ways to fix it, neither attempted here
+
+1. **A dim 0 specialization.** Map a workgroup to one output row of 515 elements, read the 512 element src1
+   body with float4 loads, and write the row coalesced, with the 3 element prefix handled scalar. The catch is
+   alignment: dst rows begin at `i1 * 515` elements, so a 16 byte vector store is not aligned for every row,
+   which is presumably why the generic kernel exists in the first place. Writing scalar but coalesced may
+   still be several times faster than the current per element index math.
+2. **Remove the concat altogether.** Keep the conv state as a rolling buffer and have the conv read across the
+   wrap boundary, as newer recurrent implementations do. That removes 33.8 MB per layer per pass instead of
+   making it cheaper, and it is the larger change.
+
+Both are recorded as work rather than as results.
