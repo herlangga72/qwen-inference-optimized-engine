@@ -792,3 +792,44 @@ changes the order in which partial sums are added, and therefore changes the las
 would preserve correctness in the usual sense and break this project's byte equality standard, which has
 been the acceptance test throughout. Any work on the slice count should be treated as a change to that
 standard, not as a free optimization, and decided explicitly rather than as a side effect.
+
+---
+
+## Correction: the narrow tile experiment measured a tile the op does not use
+
+Date: 2026-09-28, same session
+
+The earlier sections of this document conclude that the padding story is falsified by the narrow tile
+experiment. That conclusion is wrong and is retracted here.
+
+A probe placed in `ggml_vk_matmul_id`, printed during prefill where the op actually runs in batch mode,
+names the pipeline and its denoms:
+
+```
+matmul_id_subgroup_iq2_s_f32_f16acc_aligned_1 m=512 n=8 k=2048 nei0=8 nei1=512 n_as=256 denom0=64 denom1=64
+matmul_id_subgroup_iq3_s_q8_1_1              m=2048 n=8 k=512  nei0=8 nei1=512 n_as=256 denom0=64 denom1=64
+```
+
+`denom0` is 64, and the small entry of `tc_mmqid` carries `s_mmq_wg_denoms`, which is 32. So the op runs on
+the medium tile. The narrow tile experiment changed `s_warptile_mmqid`, the small entry, which this op never
+selects. It measured nothing about the column tile, and the padding hypothesis is therefore **untested**, not
+falsified. The lesson is the same one that has been recurring: the experiment was not shown to be connected to
+the thing it claimed to test.
+
+The corrected result from the timing sweep stands: the x grid carries real, proportional work and cannot be
+shrunk. The narrow tile has to be applied to the medium tile to be a real test, which is a different edit,
+`m_warptile_mmqid`, along with `m_mmq_wg_denoms` for the N denom.
+
+## Correction: ids is [n_expert_used, n_tokens], so the y grid is 512
+
+The probe also settles the grid geometry, which this document had wrong twice. `nei0` is 8 and `nei1` is
+512, and those are `ids->ne[0]` and `ids->ne[1]`, so the ids tensor is `[n_expert_used, n_tokens]`. The y
+grid is therefore `nei1`, which is the token count, 512, and not 8. The shader exits those workgroups at
+`if (ic * BN >= _ne1) return;` where `_ne1` is the number of columns that expert actually received, about 16
+at this batch size, so the y over dispatch is very large in nominal terms and cheap per workgroup.
+
+Earlier sections of this document describe the y grid as 8 and derive the over dispatch from it. Those
+numbers are wrong and should be read as superseded by this section. What survives is the direction: this op
+dispatches a grid far larger than its useful work in both the x and y axes, and the useful columns per expert
+are far fewer than the tile width, but which of those is worth attacking is now open again rather than
+settled.
