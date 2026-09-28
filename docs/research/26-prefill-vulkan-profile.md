@@ -684,3 +684,62 @@ The x grid change is reverted. Revert verified: perplexity 6.0495, exactly the b
 231.87. The narrow tile change is also reverted, as a null result. The tree is clean, and both the padding
 story and the overhead model are documented here as wrong or incomplete: the cost is in the split k work and
 the grid that indexes it, which is the next thing to read, in `mul_mmq.comp`.
+
+---
+
+## The x grid cannot be reduced, and two instruments failed their own checks
+
+Date: 2026-09-28, same session
+
+### The measurement
+
+The x grid divisor was made a runtime knob (`GGML_VK_MMID_XDIV`, 1 reproduces upstream) so that one
+build could sweep it, gated on perplexity, which had already returned 6.0495 twice to five significant
+figures on independent runs:
+
+| divisor | x grid | perplexity |
+| --- | --- | --- |
+| 1 | 512 | 6.0495 |
+| 2 | 256 | 81555.6552 |
+| 4 | 128 | 97551.4202 |
+| 8 | 64 | 102641.0678 |
+| 16 | 32 | 94190.0921 |
+| 32 | 16 | 90105.6877 |
+
+Halving the grid already destroys the output. So `x` is not padded, and the 1048576 workgroups are not
+waste: the grid is `blocks_m` times the number of k slices, which is 16 times 32 for K 2048, over 256
+experts. The y dimension, 8, does exit early, on `data_expert_count[expert_idx]`, at the top of `main`.
+
+That means the MoE path splits k into 32 slices of 64 while the two shaders this document already quoted set
+`start_k = 0` and `end_k = p.K` for `MUL_MAT_ID`, and the MoE push constant has no `k_split` field at all.
+The contradiction is unresolved. A debug print placed in `ggml_vk_matmul_id` never fired, and the string was
+not found in `libggml.so`, which turned out to be the wrong library to search because the Vulkan backend
+builds as its own. The leading hypothesis is a split k variant with an atomic or reduction store, and it is
+recorded as a hypothesis rather than a finding, because the instrument designed to settle it did not work
+and was not pursued to the end.
+
+What is established is the conclusion that matters for the optimization: **the x grid is load bearing and
+cannot be shrunk.** The earlier 68 percent result was computing one thirty second of the k range.
+
+### Two instruments that failed
+
+The `llama-cli` output is **not deterministic in this build**. Two runs, same binary, same flags, same
+prompt, same seed produced 1551 and 1543 bytes with different checksums. Everything this session concluded
+from `llama-cli` comparisons is therefore retracted:
+
+- the divisor sweep verdicts, which called every divisor broken, were noise and would have said the same
+  about a correct change;
+- the 3 byte difference between the baseline and the changed build (1803 against 1806) was noise, not the
+  corruption it was read as;
+- the claim that CPU and Vulkan disagree at `-c 2048` (1803 against 2050) was noise as well. The earlier
+  session's 938 byte equality may still hold, but it was not reproduced here and should not be relied on
+  without a determinism check.
+
+Perplexity passed the determinism check that `llama-cli` failed, on the same machine, same session. It is
+the only instrument in this work so far that has measured the output and could be shown to be repeatable,
+and it is what caught the corrupted k range. It should be the primary gate, with `llama-cli` used only for
+eyeballing.
+
+The lesson count is now ten, and this pair sharpens it. It is not enough for an instrument to be plausible
+and to agree with the hypothesis. It has to be shown repeatable on this machine before its verdicts count,
+and any check that greps a library, a log, or a file must first be shown to be looking at the right thing.
