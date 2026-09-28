@@ -595,3 +595,92 @@ Neither is fatal, but both mean this is not the one line edit it looked like:
 
 Both are the same shape of work the `iq2_s` integer path needed, which is a new pipeline entry plus both
 host lists, rather than a new subsystem.
+
+---
+
+## Two experiments on the MoE op, and the one that looked like a 1.7x win
+
+Date: 2026-09-28, same session
+
+Both experiments were run against the same baseline, pp512 231.52, with the op reporting 862 to 900
+GFLOPS per second at 9.5 ms per call. One was a null result and one was a bug that presented as a large
+speedup. The second is the more useful of the two.
+
+### Experiment one, a narrow matmul_id column tile, null
+
+The small `matmul_id` tile is 32 columns wide. On this device `BLOCK_SIZE` and `WARP` are both 32, so one
+workgroup is one warp covering a single 32 by 32 tile, and the padding argument above said half of it was
+wasted. BN and WN were both halved to 16 in the subgroup branch, with their own `wg_denoms`, which the
+selector reaches without any change because it returns entry 0 whenever n is 32 or less.
+
+Result: 878 and 899 GFLOPS per second against 862 and 900 baseline, pp512 230.99 against 231.52. A null
+result, less than the run to run noise. The half empty tile was not the cost.
+
+### Experiment two, shrinking the x grid, which broke correctness
+
+The fit on the two batch sizes gives a clean two parameter model, T = L + W over r:
+
+| quantity | value |
+| --- | --- |
+| marginal rate r | 2244 GFLOPS/s, near the dense 2430 to 3372 |
+| fixed overhead L | 5.67 ms per call |
+| over 78 calls | 442 ms, 20 percent of a 2220 ms pass |
+
+The grid is `{ m, nei1, n_as }`, which for this op is `{ 512, 8, 256 }`, 1048576 workgroups. The shader
+derives `ir = WorkGroupID.x % blocks_m` and `ik = WorkGroupID.x / blocks_m` with `blocks_m` 16, so passing
+`m` looked like dispatching 32 workgroups per M tile when one would do. The x grid was changed to
+`CEIL_DIV(m, wg_denoms[0])`, which is 16.
+
+The measurement was spectacular: 1605 and 1558 us per call against 9542 and 9780, 5351 and 5513 GFLOPS per
+second, **pp512 231.52 to 388.87, a 68 percent gain**. The overhead model predicted about 24 percent, so the
+result was better than predicted, and the reported rate of 5.5 TFLOPS per second sat at 82 percent of the
+680M's 6.7 TFLOPS per second fp16 peak. Every number was consistent and pleasing.
+
+Perplexity said otherwise. On the same input, same flags, baseline build against changed build:
+
+| build | perplexity |
+| --- | --- |
+| baseline | 6.0495 +/- 0.36037 |
+| x grid reduced | **90105.6877** |
+
+### What was actually wrong
+
+`ik` is not dead for the MoE path. It indexes the split k slices, and the quant shader accumulates
+`start_k = ik * p.k_split` over `end_k = min(p.K, (ik + 1) * p.k_split)`, with the partial results summed by
+a reduction afterwards. The call site even says so: `prealloc_split_k_need_sync` is set on the path out of
+`ggml_vk_matmul_id`. Dropping `ik` above zero therefore dropped most of the k range, which is why the op got
+faster and why the answer was wrong.
+
+The source reading that produced the mistake was of `mul_mm.comp`, whose `MUL_MAT_ID` branch does set
+`start_k = 0` and `end_k = p.K`, and whose output offset for `ik` is guarded by `#ifndef MUL_MAT_ID`. The
+quantized path for this model does not use that branch. It uses `mul_mmq.comp`, where the k split is live.
+
+### The lesson, which is about instruments again
+
+`GGML_VK_PERF_LOGGER` reports a rate computed from the *nominal* shape of the operation, not from the work
+actually done. A change that silently computes less work therefore reports a large speedup, and the reported
+rate can even land just under the hardware peak while doing so, which is exactly what a plausible
+optimization looks like. The denominator moved, and the numerator was assumed.
+
+This is the ninth time in this work that a measuring instrument agreed with me for the wrong reason. The
+check that caught it was the only one in the set that measures the *output* rather than the time: a
+deterministic perplexity value, compared between two binaries built from the same tree, same input file,
+same flags.
+
+Practical instruments established here, all cheap:
+
+- `llama-perplexity -f prose.txt -ngl 99 -fa on -c 2048 --chunks 2` gives a deterministic single number.
+  Baseline for this model and file is 6.0495. Use it as an A/B on every grid or kernel change before
+  believing any speedup.
+- `llama-cli` needs `-st` or it runs the conversation until the context fills; one runaway wrote 83 MB
+  before it was killed.
+- CPU against Vulkan byte equality is *not* available at `-c 2048` on this model: the baseline build alone
+  differs between backends there, 1803 bytes against 2050, so that comparison proves nothing and only
+  looked like it did.
+
+### State after these experiments
+
+The x grid change is reverted. Revert verified: perplexity 6.0495, exactly the baseline value, and pp512
+231.87. The narrow tile change is also reverted, as a null result. The tree is clean, and both the padding
+story and the overhead model are documented here as wrong or incomplete: the cost is in the split k work and
+the grid that indexes it, which is the next thing to read, in `mul_mmq.comp`.
