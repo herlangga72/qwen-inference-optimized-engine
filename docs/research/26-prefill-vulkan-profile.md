@@ -1657,3 +1657,59 @@ reasoning in its header comment, and with MODEL, CTX, PORT, HOST and NPARALLEL o
 was verified by starting the server, making one request that returned text, and shutting it down; the log
 confirms `creating MTP draft context against the target model`, so the model's own NextN head is the drafter
 and no separate draft model file is needed.
+
+---
+
+## The two fusions worth attacking, and what each actually requires
+
+Date: 2026-09-28, later session
+
+Both candidates are in the same place in the graph, the GDN conv and its state, and both need a core op change
+rather than a backend tweak. The numbers below are measured.
+
+### One: fuse the concat into the convolution (prefill, 8.4 percent)
+
+`gated` concat, `src/models/delta-net-base.cpp:472`:
+
+```c
+ggml_tensor * conv_input = ggml_concat(ctx0, conv_states, qkv_mixed, 0);
+```
+
+30 calls per pass at 5.9 ms, 33.8 MB of traffic each at an achieved 6.2 GB/s against a device that does about
+65 GB/s. The specialization built earlier removed every division and the private array from the kernel and
+bought 1.16x on the op and nothing measurable on pp512, so the cost is memory, not instructions. Fusing the
+join into the conv deletes the traffic instead of moving it faster.
+
+### Two: fuse the two state copies into the producers (decode, 4.9 percent)
+
+`delta-net-base.cpp:496` and `:556`, one each per GDN layer, 30 layers, so 60 copies per token:
+
+```
+CPY: 60 x 38671 us   // 4.9 percent of decode
+```
+
+At 98 KB for the conv state copy, bandwidth says about 1.5 us; the measured cost is tens of microseconds per
+call, so these are dispatch and dependency bound, not bandwidth bound. The conv is a single tensor op, so the
+state has to be written by a separate copy after it.
+
+### What both require
+
+Either extend `GGML_OP_SSM_CONV` to take the state as a second source and to write the updated state as a
+second output, or add a new op that does so. That touches the op definition, the CPU implementation (needed to
+keep the byte equality gate meaningful), the Vulkan shader and host dispatch, and the graph. It is a real
+change, not a knob, and it has to keep perplexity at 6.0495 with clocks sampled during interleaved runs, since
+this box's windows move by 20 percent.
+
+Recommended order: the concat first. It is 8.4 percent of prefill against 4.9 percent of decode, its saving is
+a pure traffic deletion with no numerical consequence, and the same op change then enables the state copy
+fusion for free.
+
+### A cheaper lead found while looking
+
+The concat's achieved rate is not constant with size: 8.5 MB per call runs at 21.9 GB/s at `ub 128` while
+33.8 MB per call runs at 5.9 GB/s at `ub 512`, a factor of 3.7. A fixed producer stall cannot explain that,
+since it would hurt the small case more. A power of two row stride is a candidate: `src1` rows are exactly
+2048 bytes apart while `dst` rows are 2060, so the source rows map identically into the cache sets. If that is
+the cause, reordering the copy so each workgroup spans a contiguous range across rows rather than one row
+could recover much of the gap without any op change at all, and it is worth one experiment before the larger
+change.
