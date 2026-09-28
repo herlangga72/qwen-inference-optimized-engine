@@ -1991,3 +1991,55 @@ The cheap ways to settle it: reboot and measure cold, cap the CPU frequency and 
 its high DPM level (needs root). None of the recorded results are invalidated: every accepted number came from
 a matched pair built and measured inside one window, and the full power figures were taken when the same code
 delivered them.
+
+---
+
+## The correctness gate stopped being reproducible, which invalidates the window
+
+Date: 2026-09-28, later session
+
+Asked for the pre-change baseline against the current build in one window, which is the right experiment, and it
+produced a flat result plus something much more important.
+
+### The A/B, flat
+
+| build | pp512 | tg128 |
+| --- | --- | --- |
+| baseline, before the MoE tile win | 113.05 +/- 0.63 | 6.23 +/- 0.01 |
+| current, with the MoE tile win | 118.51 +/- 0.24 | 6.09 +/- 0.10 |
+
+Both are throttled to the same level, so the ten percent the win is worth cannot be demonstrated here. That part
+is a negative result and it is exactly what was predicted as *possible* but not as the expectation: I said the
+gap would be visible even in the degraded state and it is not.
+
+What it does show is that the engine has not regressed. Two builds that differ only by the tile change measure
+the same, so the code is not the variable.
+
+### The gate is no longer deterministic, and that outranks everything
+
+The perplexity gate has returned **6.0495** to five significant figures on every build for this entire work,
+which is why it was adopted as the correctness check. In this window, on the same commit, the same model and
+the same input:
+
+```
+6.0495     earlier today, repeatedly
+6.1966     first run in this window
+6.0888     second run in this window
+```
+
+The model is unchanged (`md5 6cf33913bb32`, file dated 2026-09-26) and so is the input (`fb04d4c457b8`). The
+driver is unchanged (mesa 1:26.2.2-1 from a fortnight ago), the clocks are at their requested maximum, and
+`dmesg` shows no EDAC, MCE or amdgpu errors.
+
+So the GPU path has become **non-deterministic and 2.2 times slower at the same time**, with no repository
+change to explain either. Nothing measured in this window is trustworthy, including the A/B above, and no code
+change can address it.
+
+### What to do about it
+
+Reboot and re-check the gate first: `llama-perplexity -f prose.txt -ngl 99 -fa on -c 2048 --chunks 2` has to
+return exactly 6.0495 and pp512 has to return about 255. If it does not, the next things to look at, in order
+of cheapness: force the other shader compiler with `RADV_DEBUG=llvm` against the default ACO, since a compiler
+change would explain both the slower and the different numerics; check the non-default
+`ppfeaturemask 0xfff7bfff` on the amdgpu module, bit 19 cleared, against the stock value; and run a memory test,
+since non-deterministic arithmetic under load is also the signature of failing RAM.
