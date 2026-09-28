@@ -1449,3 +1449,60 @@ measurements around it were right. Two consequences:
 The same measurement also strengthens the earlier observation about volume: the same kernel reaches 21.9 GB/s
 at 8.5 MB per call and 6.2 GB/s at 33.8 MB per call, and removing its instructions does not change that. The
 effect is in the memory system at that size, not in the kernel's arithmetic.
+
+---
+
+## Plan for removing the concat: what the graph does and what the conv would need
+
+Date: 2026-09-28, same session
+
+Read rather than assumed, so the next attempt starts from the real structure.
+
+### Where it is
+
+`src/models/delta-net-base.cpp`, `build_conv_state`, line 472:
+
+```
+ggml_tensor * conv_input = ggml_concat(ctx0, conv_states, qkv_mixed, 0);
+```
+
+with `conv_states` a reshaped view of the recurrent state buffer, `(conv_kernel_size - 1) x conv_channels
+x n_seqs`, which is 3 x 8192 here, and `qkv_mixed` transposed to `(n_tokens, conv_channels, n_seqs)`. The
+concatenation is `515 x 8192` for a 512 token batch.
+
+### The concat serves two purposes, not one
+
+1. It gives the separate conv op a contiguous sliding window, which is what the 33.8 MB buys.
+2. It is also the **source of the state update**. `conv_state_last` is a `ggml_view_3d` of `conv_input`
+   starting at `conv_input->ne[0] - conv_states->ne[0]`, that is the last 3 rows, and those are copied back
+   into the state buffer by `ggml_cpy`. So the update reads the last three rows of `qkv_mixed` through the
+   concatenated tensor.
+
+Consequence: the update can be pointed at a view of `qkv_mixed` directly, which is a small graph change, but
+that alone does not remove the concat while the conv op still takes a single tensor.
+
+### The fused path does not help here
+
+`cparams.fused_gdn_ch` defaults to true at `src/llama-context.cpp:208` and is resolved by a probe at line 538,
+but the profile shows a separate `SSM_CONV_SILU` op at 60 calls, so the conv is not fused and
+`build_conv_state` is on the path. The concat is structural rather than a fallback artifact.
+
+### What a fix requires
+
+A conv that reads from two sources: the three state rows and the new input rows, with the window shift
+handled in the kernel instead of by materialising the joined tensor. Then `conv_input` disappears, the state
+update reads a view of `qkv_mixed`, and the 33.8 MB per layer per pass stops being moved at all. At the
+measured 44.53 GB/s ceiling that traffic is about 23 ms per pass; at the 6.2 GB/s the concat currently
+achieves it is 171 ms.
+
+### The risk areas, from the code
+
+- `cparams.n_rs_seq == 0` and the else branch marked `[TAG_RECURRENT_ROLLBACK_SPLITS]`, which assumes the
+  last `n_rs_seq + 1` tokens of a sequence are in the same ubatch. Both need the same treatment.
+- The state update currently happens by copying from inside the concatenated tensor; changing its source
+  changes the read-after-write relationship with the conv.
+- `build_delta_net_fused` and `build_delta_net_chunking` are two paths through the same builder, and the
+  conv input is built for both.
+
+Gate as before: perplexity 6.0495, which is clock independent, the concat op disappearing from the profile,
+and clocks sampled during the run with the two builds interleaved, since windows here differ by 20 percent.
