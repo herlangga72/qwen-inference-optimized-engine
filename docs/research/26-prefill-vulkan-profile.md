@@ -1287,3 +1287,29 @@ reports the idle state and will mislead, as it did here. The practical rule is u
 none of the recorded results are affected: interleave A and B so that drift cancels, as done for the MoE
 change, where the baseline and the change were measured inside the same window and the difference was ten
 percent against a per run spread under one.
+
+---
+
+## The micro batch conclusion survives an interleaved test
+
+Date: 2026-09-28, same session
+
+The sweep above ran sequentially inside a drifting window, so its ordering could have been drift rather than
+the micro batch. Re-run interleaved, one round of each per pair:
+
+| round | ub 512 | ub 64 |
+| --- | --- | --- |
+| 1 | 218.46 | 75.66 |
+| 2 | 219.20 | 118.72 |
+
+ub 512 wins both rounds by 1.8 to 2.9 times, far outside any spread, so a smaller micro batch being worse is
+confirmed rather than an artifact of drift. The matmuls lose more than the concat gains; the concat becomes
+3.7 times cheaper per token at ub 128 and it is not enough.
+
+What is not reliable is the absolute ub 64 value: 75.66 against 118.72, a 57 percent difference between two
+runs of the same configuration. Short, dispatch dominated runs are the most exposed to a core clock that
+wanders between 533 and 1971 MHz. Any future measurement of a small effect on this box should be interleaved,
+and the ub 64 figure should not be quoted as a throughput.
+
+This is the second comparison in this session that interleaving has rescued, after the tile change, and the
+third time a claim had to be corrected because a reading was taken without asking what it covered.
