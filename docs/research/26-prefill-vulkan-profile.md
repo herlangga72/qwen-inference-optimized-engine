@@ -1044,3 +1044,60 @@ Two consequences for this model:
 Where that leaves the profile: the MoE op is now 551 ms of a pass that is still around 2000 ms, dense matmul
 is about 26 percent, GATED_DELTA_NET and CONCAT about 8 percent each, and flash attention 1.2 percent. The
 MoE lever is exhausted at WN 16, which is the floor the WNITER condition allows.
+
+---
+
+## Fresh profile, and the same narrowing on the k quant family is inside the noise floor
+
+Date: 2026-09-28, same session
+
+### The pass as it now stands
+
+With the base family win in place, one profiled pass, ranked by total time, with the counts as reported:
+
+| share | calls | op |
+| --- | --- | --- |
+| 27.5% | 156 | `MUL_MAT_ID iq2_s` m=512 n=8 k=2048, the gate and up projections, already narrowed |
+| 12.5% | 74 | `MUL_MAT_ID iq3_s` m=2048 n=8 k=512, the down projection |
+| 11.9% | 78 | `MUL_MAT q6_K` m=8192 n=512 k=2048 |
+| 8.4% | 60 | `CONCAT` |
+| 7.9% | 60 | `GATED_DELTA_NET` |
+| 6.2% | 78 | `MUL_MAT q6_K` m=2048 n=512 k=4096 |
+| 4.3% | 60 | `MUL_MAT q6_K` m=4096 n=512 k=2048 |
+| 2.1% | 192 | `MUL_MAT q6_K` m=512 n=512 k=2048 |
+| 1.1% | 20 | `FLASH_ATTN_EXT` |
+
+Dense `q6_K` is about 24.5 percent across those four shapes, and it has no column padding to remove because
+there n is the token count and the tiles are full. CONCAT at 8.4 percent for 60 memcpy shaped calls is a
+candidate on its own merits.
+
+A correction to the arithmetic used earlier in this document: the gate and up projections are one op each per
+layer, so `MUL_MAT_ID iq2_s` is called 156 times per pass, not 78. The 78 figure came from reading a single
+profiled line. The wall clock remains the measure of record, since the per op times are GPU timestamps that
+do not necessarily sum to the pass.
+
+### The down projection, narrowed, and reverted
+
+The down projection runs on the `mmqid_int_k` family, which the first change did not touch, so the same
+narrowing was applied to its medium entry: BN 64 to 32, WN 32 to 16, WM untouched, with its own denoms. The
+three conditions were checked first: with BM 64, WM 32, WMITER 1, TM 2, TN 2 and WARP 32, `BN = WN * 2` is
+32, `WNITER = (32 * 16) / (32 * 2 * 2 * 1) = 4` is at least 1, and the thread grid is
+`(32 / 1 / 2) * (16 / 4 / 2) = 16 * 2 = 32 = WARP`.
+
+| quantity | with the base fix only | with both |
+| --- | --- | --- |
+| perplexity | 6.0495 +/- 0.36037 | 6.0495 +/- 0.36037, correct |
+| `iq3_s` down projection per call | 6858 us | 6709 us, 2 percent |
+| pp512 | 254.8, a pool of five | 255.89 +/- 0.53 |
+
+Two percent on a 12.5 percent share is about 0.25 percent of the pass, and the pp512 difference sits inside
+the per run spread of 0.5 to 0.7. It was reverted, per the standing rule that a change which does not clearly
+beat the in situ baseline is recorded and reverted rather than carried on the strength of an expectation. It
+is not a regression; it is unprovable with the instruments available here, and these numbers are the record
+for anyone who revisits it with a better one.
+
+What it does establish is a bound on the technique: it pays where the op is column work bound. The gate and
+up projections, m 512 and k 2048, gained 1.35 times. The down projection, m 2048 and k 512, gains about 2
+percent, so its time is not in the column work, and the most likely reason is that both ops stream the same
+weight bytes and the down projection is closer to streaming bound, where narrowing a column tile changes
+nothing.
