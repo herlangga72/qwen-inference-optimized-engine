@@ -1782,3 +1782,37 @@ side state copies, 4.9 percent, contrary to what was claimed when the option was
 still has to write the recurrent state buffer, it simply reads from the input view instead of from the concat
 output. So the honest expectation for this change is the prefill 8.4 percent, with the decode copies
 untouched.
+
+### The dispatch, and a collision found before it bit
+
+The op entry point is `ggml_vk_ssm_conv` at `ggml-vulkan.cpp:10286`, called from the graph switch at 12668,
+and it dispatches through
+
+```c
+ggml_vk_op_f32<vk_op_ssm_conv_push_constants>(ctx, subctx, src0, src1, src2, nullptr, dst, GGML_OP_SSM_CONV, {...});
+```
+
+**`src[2]` is already taken.** The backend fuses the conv with a following silu and, in the bias form, with an
+add, which is what the three fusion modes at line 10292 and `ggml_vk_can_fuse_ssm_conv` at 13630 do, and the
+fused operand arrives as `src[2]`. So the state must live in **`src[3]`**, and the CPU kernel already written
+needs its `dst->src[2]` changed to `dst->src[3]`. The builder must set `src[3]` and leave `src[2]` alone.
+
+The shader bindings must then follow the `ggml_vk_op_f32` argument order, which is src0, src1, src2, src3, dst:
+binding 0 input, 1 weight, **2 the fused operand**, **3 the state**, 4 dst. The shader as written has the state
+at 2 and the bias at 3, so those two swap.
+
+### The remaining steps, corrected
+
+1. Builder and CPU kernel: state moves from `src[2]` to `src[3]`. Small, mechanical, and covered by the
+   existing assertion set.
+2. Shader: swap bindings 2 and 3.
+3. Dispatch: in `ggml_vk_op_get_pipeline`'s SSM_CONV case return the state pipelines when `src[3]` is present,
+   and in `ggml_vk_ssm_conv` pass five buffers in the op_f32 order, filling `st_nb1`, `st_nb2` and `n_st` from
+   `dst->src[3]`. The grid stays `{nr, n_t, n_s}`, but note `n_t` is now the input's row count rather than the
+   window-shortened one, since the two source form has one output row per input token.
+4. Graph: in `qwen35moe.cpp:415`, `qwen35.cpp:391` and `qwen4exp.cpp:924`, call `ggml_ssm_conv_state` instead
+   of building the concat and calling `ggml_ssm_conv`, and point the state update at a view of the last three
+   rows of `qkv_mixed` instead of the tail of the concatenated tensor.
+
+Each step is independently inert: steps 1 to 3 add capability that nothing selects, and step 4 is the one that
+changes behaviour and therefore the one that has to be measured.
