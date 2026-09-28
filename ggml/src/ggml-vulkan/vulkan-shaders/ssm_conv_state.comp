@@ -17,8 +17,8 @@ layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z = 1) in;
 
 layout(binding = 0) readonly buffer Src0 { float src0[]; }; // input, {n_t, nr, n_s}
 layout(binding = 1) readonly buffer Src1 { float src1[]; }; // weight, {nc, nr}
-layout(binding = 2) readonly buffer Src2 { float src2[]; }; // state, {n_st, nr, n_s}
-layout(binding = 3) readonly buffer Bias { float bias[]; };
+layout(binding = 2) readonly buffer Bias { float bias[]; }; // fused add operand, or a dummy
+layout(binding = 3) readonly buffer Src2 { float src2[]; }; // state, {n_st, nr, n_s}
 layout(binding = 4) buffer Dst { float dst[]; };
 
 layout(push_constant) uniform PushConstants {

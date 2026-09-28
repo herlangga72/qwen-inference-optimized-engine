@@ -1816,3 +1816,44 @@ at 2 and the bias at 3, so those two swap.
 
 Each step is independently inert: steps 1 to 3 add capability that nothing selects, and step 4 is the one that
 changes behaviour and therefore the one that has to be measured.
+
+### The graph step has an ordering trap, and how to avoid it
+
+`build_conv_state` currently does three things: it assembles the joined window, it builds the state update as a
+`ggml_cpy`, and it returns the joined tensor, which the caller hands to `ggml_ssm_conv`. The update is expanded
+into the graph **inside** `build_conv_state`, so it is ordered before anything the caller adds afterwards.
+
+That is harmless while the conv reads the joined tensor, which is a separate buffer. It is **not** harmless
+once the conv reads the state buffer directly, because that is the same buffer the update writes: the copy
+would be ordered first and the conv would read the current batch's trailing rows as if they were the previous
+context. The model would still produce plausible text, so this is exactly the class of bug the perplexity gate
+exists to catch, and it must not be introduced deliberately.
+
+The fix is to move the update after the conv. Concretely, `build_conv_state` should return the pieces rather
+than performing the copy:
+
+```c
+struct conv_build {
+    ggml_tensor * input;    // the new rows, transposed
+    ggml_tensor * state;    // the previous rows, the conv's second source
+    ggml_tensor * upd_src;  // last (conv_kernel_size - 1) rows of input
+    ggml_tensor * upd_dst;  // where those rows belong in the recurrent buffer
+};
+```
+
+and the caller becomes, in `qwen35moe.cpp:411` and the same two places in `qwen35.cpp` and `qwen4exp.cpp`:
+
+```c
+conv_build cb = build_conv_state(...);
+ggml_tensor * conv_output_proper = ggml_ssm_conv_state(ctx0, cb.state, cb.input, conv_kernel);
+ggml_build_forward_expand(gf, ggml_cpy(ctx0, cb.upd_src, cb.upd_dst));
+```
+
+Two of the four fields are new; the last two already exist inside `build_conv_state` today and only move to
+the caller. The class declaration lives with the other graph builders, not in a `delta-net-base.h` as the
+earlier note assumed, so locate it before editing. The `n_rs_seq != 0` branch marked
+`[TAG_RECURRENT_ROLLBACK_SPLITS]` builds its own view and copy and needs the same treatment.
+
+Gate for this step is the usual one: perplexity 6.0495 on Vulkan, which is the check that would catch the
+ordering mistake, then the concat dropping out of the profile and the pp512 measurement with clocks sampled
+during interleaved runs.

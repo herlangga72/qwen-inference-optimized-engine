@@ -10287,6 +10287,7 @@ void ggml_vk_ssm_conv(ggml_backend_vk_context * ctx, vk_context& subctx, const s
     ggml_tensor * conv = cgraph->nodes[node_idx];
     const ggml_tensor * src0 = conv->src[0];
     const ggml_tensor * src1 = conv->src[1];
+    const ggml_tensor * state = conv->src[2]; // two source form, null for the joined window form
 
     // Pick the destination tensor (last node in the fused chain) and the optional bias.
     // Fusion modes: 0 = ssm_conv, 1 = ssm_conv+silu, 2 = ssm_conv+add(bias)+silu.
@@ -10301,10 +10302,10 @@ void ggml_vk_ssm_conv(ggml_backend_vk_context * ctx, vk_context& subctx, const s
         dst = cgraph->nodes[node_idx + 2]; // silu
     }
 
-    // The shader always declares 4 bindings; bind src0 as a dummy when bias isn't fused.
+    // The shader always declares the fused operand binding; bind src0 as a dummy when bias isn't fused.
     const ggml_tensor * src2 = bias ? bias : src0;
 
-    ggml_vk_op_f32<vk_op_ssm_conv_push_constants>(ctx, subctx, src0, src1, src2, nullptr, dst, GGML_OP_SSM_CONV, {
+    vk_op_ssm_conv_push_constants pc = {
         (uint32_t)src0->nb[1], (uint32_t)src0->nb[2],
         (uint32_t)src1->nb[1],
         (uint32_t)dst->nb[0], (uint32_t)dst->nb[1], (uint32_t)dst->nb[2],
@@ -10313,7 +10314,26 @@ void ggml_vk_ssm_conv(ggml_backend_vk_context * ctx, vk_context& subctx, const s
         (uint32_t)src0->ne[1],
         (uint32_t)dst->ne[1],
         (uint32_t)dst->ne[2],
-    });
+        0, 0, 0,
+    };
+
+    if (state != nullptr) {
+        // Two source form: the leading window rows come from the state tensor, which arrives as the fourth
+        // descriptor so it cannot collide with the fused operand in the third.
+        pc.st_nb1 = (uint32_t)state->nb[1];
+        pc.st_nb2 = (uint32_t)state->nb[2];
+        pc.n_st   = (uint32_t)state->ne[0];
+
+        vk_pipeline pipeline = ctx->num_additional_fused_ops == 0 ? ctx->device->pipeline_ssm_conv_state_f32           :
+                              ctx->num_additional_fused_ops == 1 ? ctx->device->pipeline_ssm_conv_state_silu_f32      :
+                                                                   ctx->device->pipeline_ssm_conv_state_bias_silu_f32;
+
+        ggml_vk_op_f32<vk_op_ssm_conv_push_constants>(ctx, subctx, src0, src1, src2, state, dst,
+                GGML_OP_SSM_CONV, std::move(pc), pipeline);
+        return;
+    }
+
+    ggml_vk_op_f32<vk_op_ssm_conv_push_constants>(ctx, subctx, src0, src1, src2, nullptr, dst, GGML_OP_SSM_CONV, std::move(pc));
 }
 
 static void ggml_vk_op_f32_opt_step_adamw(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_tensor * dst, const vk_op_push_constants&& pc) {
