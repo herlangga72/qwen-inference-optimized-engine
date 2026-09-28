@@ -743,3 +743,52 @@ eyeballing.
 The lesson count is now ten, and this pair sharpens it. It is not enough for an instrument to be plausible
 and to agree with the hypothesis. It has to be shown repeatable on this machine before its verdicts count,
 and any check that greps a library, a log, or a file must first be shown to be looking at the right thing.
+
+---
+
+## The x grid is load bearing, measured by scaling rather than by output
+
+Date: 2026-09-28, same session
+
+Perplexity said the x grid cannot be shrunk, and this says why. Same binary, same workload, only the
+divisor changes, times are per call as reported by the perf logger:
+
+| divisor | x | per call | rate |
+| --- | --- | --- | --- |
+| 1 | 512 | 9723.40 us | 883 GFLOPS/s |
+| 2 | 256 | 5885.45 us | 1459 GFLOPS/s |
+| 4 | 128 | 3052.56 us | 2813 GFLOPS/s |
+| 8 | 64 | 1650.77 us | 5202 GFLOPS/s |
+| 16 | 32 | 1671.32 us | 5138 GFLOPS/s |
+| 32 | 16 | 1699.73 us | 5052 GFLOPS/s |
+
+The top four points fit **T = 0.5 ms + 18 us per x unit**, which predicts the x 64 point at 1.65 ms exactly,
+and below that the time stops falling. A linear term with a small constant means these workgroups do real
+work in proportion to their number. They are not exiting early, and their cost cannot be removed by making
+the grid smaller, only correctness removed.
+
+This also corrects the accounting two sections above. That section said only 4096 of 1048576 workgroups do
+work, a useful fraction of 0.39 percent. That number came from treating the grid as M tiles alone, which is
+the x 16 configuration, which is the broken one. Counting it properly, 16 M tiles times 32 x units times 256
+experts is 131072 useful workgroups, 12.5 percent, and it is the y dimension of 8 that exits early on
+`data_expert_count[expert_idx]`.
+
+### What this closes off
+
+The x dimension of the MoE grid carries real per-unit work and is required in full. The 68 percent result was
+that work, removed. There is no padding to reclaim there, so the earlier targets in this document, the
+padding of the column tile and the over dispatch of the x grid, are both now falsified by measurement.
+
+What remains unshown is the mechanism, because the sources read here say the MoE path does not split k while
+the behaviour says the x axis carries 32 units of real work per M tile. Two candidates are a split k with an
+atomic store, which would make the reduction traffic proportional to the slice count, and something in the
+row id path that the x index partitions. The probe built to distinguish them never printed, and the
+instrument meant to name the shader was checked against the wrong library.
+
+### A constraint worth stating plainly
+
+If the mechanism does turn out to be a split k with a host chosen slice count, then changing that count
+changes the order in which partial sums are added, and therefore changes the last bits of the result. That
+would preserve correctness in the usual sense and break this project's byte equality standard, which has
+been the acceptance test throughout. Any work on the slice count should be treated as a change to that
+standard, not as a free optimization, and decided explicitly rather than as a side effect.
