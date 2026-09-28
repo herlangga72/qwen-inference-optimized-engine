@@ -1934,3 +1934,24 @@ window readings were never trusted across windows.
 To get the real score: connect AC, `powerprofilesctl set performance`, then re-measure. The expectation is the
 254.8 recorded earlier, against a pre-change baseline of 231.5 in the same conditions, so the gain is about ten
 percent, with the MTP decode gain of 24 to 32 percent on top of it for generation.
+
+### Re-test: the profile alone does not help, and decode suffers more than the clock ratio
+
+Second measurement with the desktop profile moved from power-saver to balanced, still on battery:
+
+```
+pp512 = 113.45 +/- 0.75      tg128 = 6.07 +/- 0.01
+ADP1 online = 0, BAT0 Discharging, cpu governor powersave
+mclk: 1000, 1000, 1000, 1000, 1000   (no sample reached 2400)
+```
+
+pp is unchanged within noise, so the profile change alone did not restore the memory clock. **Connecting AC is
+the fix**, not the profile.
+
+Decode is the more interesting number: 6.07 against 22.35 at full power is 0.27, worse than the 0.42 the memory
+clock ratio predicts. So while on battery, decode loses more than bandwidth alone explains, which points at
+the CPU side as well, presumably the per token graph and sampling work under a powersave governor with the
+package power shared between CPU and GPU. That is a hypothesis, not a measurement, and it is recorded as such.
+
+Both figures return to the full power values once the adapter is connected: about 255 t/s prefill, 22.35 t/s
+generation, and 27 to 28 t/s with MTP on top.
