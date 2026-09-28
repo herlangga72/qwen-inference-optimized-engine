@@ -1571,3 +1571,55 @@ next step before writing that change is to determine how much of the measured 17
 much is waiting on the operation that produces `qkv_mixed`, since a rewrite cannot help with the latter. The
 per pass figure is real in the sense that the profiled per op times sum to the wall clock, but that does not
 distinguish the two.
+
+---
+
+## MTP speculative decoding measured: plus 24 to 32 percent on tg, optimum depth 3
+
+Date: 2026-09-28, later session
+
+Decode on this box is bandwidth bound (22.35 t/s, with about 76 percent of the token time in weight
+streaming matvecs), so speculation is the one lever that helps without reducing the bytes read. This fork
+already implements it, and the MTP head is inside the model, so no separate draft model is needed.
+
+### Measurements
+
+Fixed prompt, `-c 3000`, generation length 48 to 64, interleaved because windows on this machine differ by 20
+percent and single runs are not comparable:
+
+| configuration | generation |
+| --- | --- |
+| no speculation | 21.4, 21.3 |
+| `--spec-type draft-mtp` depth 1 | 24.2, 23.9 |
+| depth 2 | 24.9, 25.0 |
+| **depth 3, the default** | 26.9, 27.7, 28.2 |
+| depth 4 | 26.1 |
+| depth 6 | 22.8 |
+| depth 8 | 14.5 |
+
+Prefill is unchanged, as expected. Enabling MTP with its default depth is **plus 24 to 32 percent on
+generation**, and the optimum is the default 3: depth 2 costs about 9 percent against it, depth 4 about 4,
+and beyond that the draft cost dominates. So there is nothing to tune here; the default is the right setting.
+
+### Why depth is 3 and not 1 for this model
+
+The model declares `qwen3moe.nextn_predict_layers = 1` with a single NextN block at `blk.40` (753 tensors, 41
+blocks, read from the GGUF header directly). The draft head is therefore applied iteratively rather than by
+chaining heads, and the clamp
+
+```c
+chain_heads = n_mtp_layers > 1 && !is_mem_shared;
+if (chain_heads) { this->params.n_max = min(this->params.n_max, n_mtp_layers); }
+```
+
+in `common/speculative.cpp` applies **only when the model has more than one head**. It does not bind here, so
+`n_max` keeps its default of 3 from `common/common.h`. The depth is configurable with `--spec-draft-n-max`.
+
+### Still not measured
+
+The acceptance rate. llama-cli prints no speculative statistics; the server does, through
+`common_speculative_print_stats` and the "Total draft tokens accepted by the target model" metric. The depth
+optimum sitting at 3 is indirect evidence that acceptance is still positive at the third drafted position. A
+cut-off policy keyed on acceptance would go in the per-slot draft params, which the server already toggles at
+`server-context.cpp:2999`, and its threshold should be the break-even implied by the table above rather than a
+fixed 90 percent, which would disable a working gain.
