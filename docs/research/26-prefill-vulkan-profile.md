@@ -1733,3 +1733,52 @@ also explain why a batch that is four times larger costs 14.7 times more. If tha
 the allocator rather than the kernel: the Vulkan backend already has
 `GGML_VK_SUBALLOCATION_BLOCK_SIZE` and related knobs, so allocation granularity and alignment are worth
 looking at before any op change, and it is a much smaller change than a two source convolution.
+
+---
+
+## Two source conv: CPU side landed and verified, Vulkan side outstanding
+
+Date: 2026-09-28, later session
+
+### What is done
+
+`ggml_ssm_conv_state` exists in `ggml.c` and `ggml.h`, reusing `GGML_OP_SSM_CONV` with `src[2]` carrying the
+state:
+
+- `st` is `{d_conv - 1, d_inner, n_s}`, `sx` is `{n_t, d_inner, n_s}`, `c` is `{d_conv, d_inner}`.
+- `src[0]` stays the input and `src[1]` the weight, so nothing about the existing op changes when `src[2]` is
+  null.
+- The output is `{d_inner, n_t, n_s}`, one row per input token, rather than the window shortened shape the
+  joined form produces.
+
+The CPU f32 kernel now splits the tap loop: a tap whose global row `i2 + i0` falls inside the state reads the
+state, the rest read the input at row `i2 + i0 - (d_conv - 1)`. The `src2 == nullptr` branch is untouched.
+
+Verified: builds clean, and perplexity is **6.0495 +/- 0.36037**, identical to before, with the new builder
+unused. So the addition is inert until the graph calls it.
+
+### What is left, precisely
+
+1. A shader `ssm_conv_state.comp` mirroring `ssm_conv.comp` with the state as an extra input: bindings
+   0 input, 1 weight, 2 state, 3 bias, 4 dst, and spec constants `BLOCK_SIZE 32`, `TOKENS_PER_WG 16`,
+   `APPLY_BIAS`, `APPLY_SILU`. The silu variants matter because the profile shows the backend fusing the
+   following silu (`SSM_CONV_SILU`). The tap loop splits exactly as the CPU one does, with the state's row
+   stride `st_ne0` and its per sequence stride as push constants alongside `nc`, `nr`, `n_t`, `n_s`.
+2. Register three variants in `vulkan-shaders-gen.cpp` next to the three `ssm_conv_f32` lines, then three
+   pipelines in the device struct and three `ggml_vk_create_pipeline` calls with denoms `{32, 16, 1}`
+   mirroring `ggml-vulkan.cpp:3744` to `3746`.
+3. Dispatch: in the `GGML_OP_SSM_CONV` case of `ggml_vk_op_get_pipeline`, return the new pipelines when
+   `src[2] != nullptr`, and in the dispatch path pass five buffers with the extended push constants. The grid
+   stays `{nr, n_t, n_s}`.
+4. Graph: in `qwen35moe.cpp:415`, and `qwen35.cpp:391` and `qwen4exp.cpp:924` for consistency, replace the
+   concat plus `ggml_ssm_conv` with `ggml_ssm_conv_state(ctx0, conv_states, qkv_mixed_transposed, conv_kernel)`,
+   and change the state update so it copies from a view of `qkv_mixed`'s last three rows instead of from the
+   tail of the concatenated tensor.
+
+### What this will and will not buy
+
+It removes the concat, 8.4 percent of prefill, 33.8 MB per layer per pass. It does **not** remove the decode
+side state copies, 4.9 percent, contrary to what was claimed when the option was offered: the conv state copy
+still has to write the recurrent state buffer, it simply reads from the input view instead of from the concat
+output. So the honest expectation for this change is the prefill 8.4 percent, with the decode copies
+untouched.
