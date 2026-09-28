@@ -1196,3 +1196,56 @@ So the ids scan noted earlier as a possible cost does not happen. The remaining 
 over dispatch, 16 workgroups to do 1 or 2 of work, which exits at the top of `main` on `data_expert_count`
 and is bounded by the dispatch rate: about 0.2 ms per call, or 34 ms per pass. The host cannot reduce that
 without reading the expert counts back, which would cost a synchronization.
+
+---
+
+## The machine drifted 14 percent, and the memory clock explains it
+
+Date: 2026-09-28, same session
+
+Between roughly 01:17 and 01:38, with the tree unchanged at commit 20c5397dd and `git status` clean, pp512 was
+measured first at 253.81, 255.10, 255.16 and 255.22, and then at 219.02 and 219.49 +/- 0.97. The second pair
+is reproducible, so it is not noise.
+
+The core is not the cause. `temp1_input` reads 53000, which is 53 C, and `pp_dpm_sclk` reports `2: 2200Mhz *`
+with the asterisk on the 2200 entry, so the core is at its maximum clock and cool.
+
+The memory clock is the cause:
+
+```
+pp_dpm_mclk
+0: 1000Mhz *
+1: 2400Mhz
+```
+
+The fabric is running at 1000 MHz with 2400 MHz available. Every memory bound kernel, which in this pass is
+the concat and every matmul streaming weights, slows in proportion, which is consistent with a uniform
+slowdown rather than an op specific one. Contributing to the state: 3.3 GiB of the 70 GiB swap in use,
+`baloo_file` holding 4 GB and VS Code running, and `kswapd0` active. The model is 13 GiB, so page cache
+pressure can also cause re-reads.
+
+### Why the recorded A/B still stands
+
+The 9.5 to 10.1 percent result compares measurements taken inside the same window: baseline 232.37 and 232.98
+at 01:11 to 01:14, the change 253.81 to 255.89 at 01:08 to 01:17, and the earliest baseline pair 231.52 and
+231.87 from before the work began, which agrees with the 232 seen later. Both sides are inside a single
+stable window, and the difference is ten percent against a per run spread under one.
+
+What this does mean is that absolute numbers from this box are only comparable within a session window. Every
+result in this document was obtained in matched pairs for that reason, and this is the second independent
+confirmation that it was necessary. The check to run before trusting any benchmark here is `pp_dpm_mclk`: if
+it does not show 2400 MHz selected, memory bound results are not comparable to the recorded ones.
+
+### The micro batch sweep, measured in the drifted state
+
+| micro batch | pp512 |
+| --- | --- |
+| 512 | 219.02, 219.49 |
+| 256 | 196.07 |
+| 128 | 155.67 |
+| 64 | 95.03 +/- 32.79 |
+
+Smaller micro batch is monotonically worse, even though it makes the concat 3.7 times cheaper per token,
+because the matmul calls lose more than the concat gains. Consistent with the earlier finding that a larger
+micro batch is not a lever; this confirms it from the other direction. The absolute values are from the
+drifted state and should not be compared with the recorded 254.8.
