@@ -1000,3 +1000,47 @@ On this machine a run whose spread is more than a few percent is not a measureme
 pp2048, and both of the wide spreads here came from runs that looked perfectly ordinary at the time. Prefer
 pp512 for acceptance numbers, use r=4 or more for anything longer, and treat a wide spread as a reason to
 re-run rather than as a result to average.
+
+---
+
+## Which matmul_id entry the MoE ops select, and why the others do not matter here
+
+Date: 2026-09-28, same session
+
+Two lines settle this. The tile selector is called with `n = nei1` for `mul_mat_id`:
+
+```
+7407:    vk_pipeline pipeline = ggml_vk_guess_matmul_pipeline_map(ctx, *mmp_map, ne01, nei1, aligned, true);
+```
+
+and the probe showed `nei1` is 512, the token count, not 8. So the selector sees `(m, n)` of `(512, 512)` for
+the gate and up projections and `(2048, 512)` for the down projection.
+
+Our device takes the non coopmat branch, whose logic is:
+
+```
+if (m <= 32 || n <= 32) return 0;
+if (configs.size() == 2) return 1;
+if (m <= 64 || n <= 64) return 1;
+return last;
+```
+
+With `(512, 512)` the first two tests fail, so if the vector held three entries the selector would return the
+last one, the large tile with BM 128. The probe instead reported the selected pipeline with `denom0` 64,
+which is a BM of 64, the entry that was edited, at index 1. The reading that fits both facts is that this
+key's config vector holds **two** entries rather than three, so `configs.size() == 2` returns 1 directly for
+any `n` above 32. This is an inference from two measurements rather than a direct measurement of the vector
+size, and is recorded as such.
+
+Two consequences for this model:
+
+- The large `matmul_id` entry is unreachable for these keys, so narrowing it would change nothing, and the
+  small entry is reached only when `nei1` is 32 or less, that is a prompt of at most 32 tokens. That closes
+  the question of whether the other two entries want the same treatment: for this model they are not used.
+- The dense family's tiles are a different matter and are not padding limited: there `n` is the token count,
+  so a 64 or 128 wide column tile is fully used. The warp granularity trick that worked here does not have a
+  target there.
+
+Where that leaves the profile: the MoE op is now 551 ms of a pass that is still around 2000 ms, dense matmul
+is about 26 percent, GATED_DELTA_NET and CONCAT about 8 percent each, and flash attention 1.2 percent. The
+MoE lever is exhausted at WN 16, which is the floor the WNITER condition allows.
