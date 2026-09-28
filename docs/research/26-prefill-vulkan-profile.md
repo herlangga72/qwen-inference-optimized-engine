@@ -1394,3 +1394,58 @@ otherwise have been guessed are now read:
 Perplexity 6.0495, which clock drift does not affect, and the op going well below the recorded 5851 us per
 call at ub 512. The op level figure is resolvable even in the busy window, because a factor of 2 to 3 is far
 larger than the 15 to 20 percent window spread, unlike the few percent effect at the pass level.
+
+---
+
+## The concat is memory bound, not instruction bound: a specialization bought only 16 percent
+
+Date: 2026-09-28, same session
+
+The planned specialization was implemented, measured and reverted. It answered the question it was built to
+answer, and the answer is no.
+
+### What was built
+
+A new `concat_dim0.comp`, registered once as `concat_dim0_i32`, with one workgroup per output row: the row
+index from the workgroup id, the position within the row from the local id, one division per **workgroup**
+rather than three per element, and no runtime indexed private array at all. It was wired with a pipeline
+whose denoms are 1 so the grid is the row count, a new case in the element count switch to pass the row
+count, and a `pipeline_override` from `ggml_vk_concat` selected when the concat is along dimension 0 in 32 bit
+units with the trailing dimensions 1. An `GGML_VK_NO_CONCAT_DIM0` toggle forced the generic kernel so the two
+could be compared with the same binary in the same window.
+
+### The interleaved A/B
+
+Same binary, same window, alternating:
+
+| round | kernel | concat per call | pp512 |
+| --- | --- | --- | --- |
+| 1 | specialized | 5453.98 us | 217.75 |
+| 1 | generic | 6025.81 us | 215.81 |
+| 2 | specialized | 5120.33 us | 216.13 |
+| 2 | generic | 6255.68 us | 215.43 |
+
+Perplexity was 6.0495 +/- 0.36037 with the specialization in place, which is the expected result for a pure
+copy and confirms correctness.
+
+So removing all of the per element index arithmetic, which is three divisions by runtime values plus a
+private array indexed by a runtime value, made the operation **1.16 times** faster and left pp512 inside the
+noise at plus 0.3 to plus 0.9 percent. At 5454 microseconds for 33.8 MB the kernel is moving about 6.2 GB/s
+against the 44.53 GB/s ceiling, barely better than the 5.9 GB/s it managed before.
+
+### What that establishes
+
+The kernel is **memory bound** at this volume, not instruction bound. The division and the private array were
+not what cost the time, so the earlier reading of the kernel was wrong on that point even though the
+measurements around it were right. Two consequences:
+
+- The specialization is reverted, per the standing rule, since it does not clearly beat the in situ
+  baseline. Revert verified: perplexity 6.0495, and the restored build measures 5920 us per call and pp512
+  216.11, matching the generic arm of the A/B at 6026 and 6256.
+- The remaining lever is not to make the copy cheaper but to **not do it**: the rolling conv state, which
+  removes the 33.8 MB per layer per pass instead of moving it better. That is the direction the evidence now
+  points at, and it is the larger change.
+
+The same measurement also strengthens the earlier observation about volume: the same kernel reaches 21.9 GB/s
+at 8.5 MB per call and 6.2 GB/s at 33.8 MB per call, and removing its instructions does not change that. The
+effect is in the memory system at that size, not in the kernel's arithmetic.
