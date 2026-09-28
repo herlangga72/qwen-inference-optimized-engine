@@ -1313,3 +1313,46 @@ and the ub 64 figure should not be quoted as a throughput.
 
 This is the second comparison in this session that interleaving has rescued, after the tile change, and the
 third time a claim had to be corrected because a reading was taken without asking what it covered.
+
+---
+
+## The change is in HEAD, and a window can be 20 percent slower than another
+
+Date: 2026-09-28, re-measured at 03:23 after a gap
+
+This is a check that the accepted change is really present, and a measurement of how much the machine moves
+between windows.
+
+Presence, established directly rather than inferred: `m_warptile_mmqid_narrow` occurs five times in the
+working tree and five times in HEAD, the assignments are `[2] = 32` for BN and `[5] = 16` for WN, the commit
+that added them is 2c1448af4, and `build-vk/bin/libggml.so` is timestamped after the source file it was built
+from. So the running binary contains the change.
+
+Throughput in this window, with everything else identical:
+
+| quantity | accepted window | this window |
+| --- | --- | --- |
+| pp512 | 253.81 to 255.22 | **231.25 +/- 1.81** |
+| `MUL_MAT_ID iq2_s` per call | 7230 / 7042 us | **8839 / 8586 us** |
+
+The baseline in the accepted window was 232.37 and 232.98, so this window runs at about the speed of the
+baseline window while the code is the changed code. The op is 20 percent slower here than in the accepted
+window.
+
+The cause is that this box is a working desktop, not a test rig. At the time of this measurement `docker`,
+VS Code and `jcode` were each between 10 and 15 percent CPU, the load average was 1.18, and earlier
+`baloo_file` was holding 4 GB with 3.3 GiB of swap in use. On an APU those share memory bandwidth and the
+power budget with the GPU, and the core clock wanders between 533 and 1971 MHz against a 2200 maximum.
+
+### What this does and does not affect
+
+The win is established by two things that are not exposed to this: the interleaved comparison, where the
+baseline was rebuilt and measured against the change inside the same window, 232.37 and 232.98 against 253.81
+to 255.22 with spreads under 1, and the within run op timings, 9542 and 9780 microseconds per call falling to
+7230 and 7042. Both compare two builds under the same conditions rather than one build against a remembered
+number.
+
+What it does affect is any temptation to compare absolute numbers across windows. The 254.8 belongs to its
+window and the 231.25 now is not evidence against it, just as the earlier 219.49 was not. It also means the
+remaining work, the concat and the dense matmuls, needs interleaved rounds to resolve a few percent, and
+that a busy window cannot resolve one at all.
