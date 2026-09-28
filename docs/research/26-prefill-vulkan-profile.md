@@ -1892,3 +1892,45 @@ back to 6.0495. The four inert pieces stay committed, since each is verified not
 This is the second trap in this one step, after the copy ordering, and the gate caught both. That is the
 process working as intended: a graph change that would have produced plausible but wrong output, especially in
 single token decode where every token is a seam token, was stopped before it could be measured or believed.
+
+---
+
+## The real pp score, and why every window differed: the box runs on battery
+
+Date: 2026-09-28, later session
+
+Asked for the current pp512, measured with the clocks sampled during the run:
+
+```
+pp512 = 112.66 +/- 0.79 t/s
+
+t= 5s mclk=2400 sclk=2200      t=20s mclk=1000 sclk=2200
+t=10s mclk=1000 sclk=1881      t=25s mclk=2400 sclk=2200
+t=15s mclk=1000 sclk=2200      t=30s mclk=1000 sclk=533
+```
+
+and then the state of the machine:
+
+```
+/sys/class/drm/card1/device/power_dpm_state  = performance
+/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor = powersave
+ADP1 online = 0            <- AC adapter not connected
+BAT0 status = Discharging  <- on battery
+powerprofilesctl get        = power-saver
+temp1_input                 = 49 C
+```
+
+**The box is on battery, in power-saver, with the CPU governor on powersave.** The memory clock therefore
+sits at 1000 MHz against 2400 available, and 112.66/254.8 is 0.44 against 1000/2400 which is 0.42. The number is
+a power state, not a property of the code.
+
+This is the explanation for every window discrepancy in this document. The 254.8, the 231.25, the 219.49, the
+plus and minus 47 spreads, and 57 percent between two identical ub 64 runs were measured across changes in the
+platform power state, which until now was invisible because nothing was watching it. The defence that worked
+was the matched pair: for every accepted result both the baseline and the change were built and measured
+inside one window, so the state cancelled. That is also why the state copies existed at all, and why the raw
+window readings were never trusted across windows.
+
+To get the real score: connect AC, `powerprofilesctl set performance`, then re-measure. The expectation is the
+254.8 recorded earlier, against a pre-change baseline of 231.5 in the same conditions, so the gain is about ten
+percent, with the MTP decode gain of 24 to 32 percent on top of it for generation.
