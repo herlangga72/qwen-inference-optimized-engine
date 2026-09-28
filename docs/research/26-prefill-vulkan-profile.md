@@ -833,3 +833,52 @@ numbers are wrong and should be read as superseded by this section. What survive
 dispatches a grid far larger than its useful work in both the x and y axes, and the useful columns per expert
 are far fewer than the tile width, but which of those is worth attacking is now open again rather than
 settled.
+
+---
+
+## The MoE x axis has no split k behind it in the host code
+
+Date: 2026-09-28, same session
+
+The leading hypothesis for why the x grid is load bearing was a split k with a partial buffer or an atomic
+accumulation. The host code does not support that:
+
+- `ggml_vk_matmul`, the dense path, computes `k_split = ROUNDUP_POW2(CEIL_DIV(k, split_k), 256)`, dispatches
+  `x = CEIL_DIV(m, wg_denoms[0]) * wg_denoms[0] * split_k`, passes a `split_k_buffer`, and reduces afterwards
+  with `pipeline_matmul_split_k_reduce` over `m * n * batch`.
+- `ggml_vk_matmul_id` takes no `split_k`, has no `split_k_buffer` parameter, and dispatches exactly
+  `{ m, nei1, n_as }`.
+
+So the MoE path has no host driven split k, and no reduction pass, and yet with the medium tile selected,
+`blocks_m` is 8 and the required x of 512 means 64 separate contributions per M tile, every one of which
+changes the output when removed. The mechanism is **unexplained**, and the earlier sections of this document
+that assert a split k should be read as disproved rather than as background.
+
+There is one host detail that would make the arithmetic much less strange and that is worth one grep before
+any further experiment: whether `ggml_vk_dispatch_pipeline` divides the counts it is given by the pipeline
+`wg_denoms`, or uses them directly as workgroup counts.
+
+| reading | grid | consequence |
+| --- | --- | --- |
+| counts divided by denoms | 8 x 8 x 256, 16384 workgroups | the op is normal compute, 2048 useful, y over dispatched 8x |
+| counts used directly | 512 x 512 x 256, 67 million workgroups | the op is almost entirely launch overhead, 0.003 percent useful |
+
+These predict completely different next moves, and the second one would mean the 9.5 ms is mostly dispatch
+at roughly 7 billion workgroups per second, which is at the edge of plausible for 12 CUs. The measurement in
+hand, that time is linear in the x count down to 64 and then flat, is consistent with the first reading and
+not obviously with the second, but it is not conclusive either way.
+
+### Where this leaves the MoE work
+
+Established by measurement: the x grid cannot be shrunk; the y grid is the token count rather than 8; the op
+runs on the medium tile, 64 columns wide, while an expert receives about 16 columns of an actual batch. Not
+established: why the x axis carries 64 load bearing contributions with no split k in the host, and whether
+the grid counts are divided before dispatch.
+
+The untested hypothesis that still has the best motivation is the column tile. It is 64 wide against about
+16 useful columns, a factor of four, and the earlier attempt to test it changed the small tile, which this op
+never selects. A real test is `m_warptile_mmqid`, BN 64 to 32 with WM 32 to 16 so that the warp grid stays
+consistent at four warps along M and one along N, plus a dedicated denom triple because the medium entry
+shares `m_mmq_wg_denoms` with the dense family. It must be gated on perplexity, since the perf logger
+reports its rate from the nominal shape and the last grid experiment looked like a 68 percent win while
+computing one thirty-second of the work.
