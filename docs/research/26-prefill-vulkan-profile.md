@@ -1356,3 +1356,41 @@ What it does affect is any temptation to compare absolute numbers across windows
 window and the 231.25 now is not evidence against it, just as the earlier 219.49 was not. It also means the
 remaining work, the concat and the dense matmuls, needs interleaved rounds to resolve a few percent, and
 that a busy window cannot resolve one at all.
+
+---
+
+## The concat specialization plan, with the two unknowns resolved by reading
+
+Date: 2026-09-28, same session
+
+The plan below is recorded rather than executed, because it needs a build and verify cycle the remaining session
+budget cannot cover, and starting it would leave an unverified kernel in the tree. Two things that would
+otherwise have been guessed are now read:
+
+1. **The shader generator does not discover `.comp` files.** Each variant is registered by hand, for example
+   `vulkan-shaders-gen.cpp` lines 961 to 964, which map `concat_i8`, `concat_i16`, `concat_i32` and
+   `concat_i64` all onto `concat.comp` with different `A_TYPE`, `B_TYPE` and `D_TYPE` defines. So a new
+   kernel needs its own file plus exactly one registration line.
+2. **The concat works in units rather than bytes.** `ggml_vk_concat_unit_size` returns 1, 2, 4 or 8 from the
+   type size, and the host switches on it at `ggml-vulkan.cpp` 8657 to choose `pipeline_concat_i8` through
+   `pipeline_concat_i64`. Our concat is f32, so its unit size is 4 and only the i32 case needs a
+   specialization; the other three keep the generic kernel.
+
+### The plan, in three pieces
+
+1. A new `concat_dim0.comp`, registered once as `concat_dim0_i32` with `D_TYPE` `uint`. One workgroup per
+   output row: the row index from `WorkGroupID.x`, the position within the row from `LocalInvocationID.x`,
+   the three element prefix handled by the first three threads, and no divisions and no runtime indexed
+   private array anywhere. It reuses the existing `vk_op_concat_push_constants`, so the host side stays small.
+2. A `pipeline_concat_dim0` created next to the other concat pipelines, with
+   `sizeof(vk_op_concat_push_constants)` and the same three bindings.
+3. A direct dispatch for the specialized case. `ggml_vk_concat` currently goes through
+   `ggml_vk_op_f32`, which derives its grid from the element count, while this kernel wants one workgroup per
+   row. So call `ggml_vk_dispatch_pipeline` directly with a grid of `{ dst->ne[1], 1, 1 }`, selected when
+   `op_params[0]` is 0, the unit size is 4, and `ne[2]` and `ne[3]` are 1.
+
+### Gate
+
+Perplexity 6.0495, which clock drift does not affect, and the op going well below the recorded 5851 us per
+call at ub 512. The op level figure is resolvable even in the busy window, because a factor of 2 to 3 is far
+larger than the 15 to 20 percent window spread, unlike the few percent effect at the pass level.
