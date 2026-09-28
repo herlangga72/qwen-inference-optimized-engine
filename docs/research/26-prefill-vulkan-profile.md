@@ -1955,3 +1955,39 @@ package power shared between CPU and GPU. That is a hypothesis, not a measuremen
 
 Both figures return to the full power values once the adapter is connected: about 255 t/s prefill, 22.35 t/s
 generation, and 27 to 28 t/s with MTP on top.
+
+---
+
+## A 2.2x GPU slowdown with everything else ruled out
+
+Date: 2026-09-28, later session
+
+Same code (perplexity 6.0495, unchanged), same device, same driver, and pp512 falls from 254.8 to about 114 to
+119, with tg128 from 22.35 to 6.11. The hypotheses and what measured each one:
+
+| hypothesis | measurement | verdict |
+| --- | --- | --- |
+| memory clock capped | mclk 2400 in every sample during the run | refuted |
+| core clock capped | sclk 2200 in every sample | refuted |
+| CPU governor or frequency | cpu0 2.28, cpu4 4.54, cpu8 3.50 GHz against a 4.79 max | refuted |
+| machine uniformly slow | CPU backend pp512 85.77 against 97.38 recorded, that is 88 percent | refuted |
+| memory bandwidth | membw 47.29 GB/s, better than the 44.53 baseline | refuted |
+| RAM pressure | 18 GiB available | refuted |
+| weights evicted to disk | 0 MB read by the llama-bench process across three 4 second windows during the measurement | refuted |
+| another process doing the disk reads | per process read_bytes: baloo unchanged, brave plus 16 MB, code unchanged | refuted |
+| wrong device | one Vulkan device, 680M RADV REMBRANDT, and it is in use | refuted |
+| CPU starvation of the GPU | gpu_busy 100 percent during the run | refuted |
+| something else using the GPU | gpu_busy 0 percent at idle across five samples | refuted |
+| a driver update | mesa 1:26.2.2-1 installed 2026-09-14, no upgrades today or yesterday | refuted |
+
+What is left is that the GPU is saturated at its requested clocks and still produces 45 percent of the work per
+second. That points at the APU sharing one power budget: the CPU is boosting hard (a powersave governor that
+nonetheless reaches 4.5 GHz) with roughly 45 percent aggregate background CPU load from clickhouse, four brave
+processes, firefox, two code processes and the compositor, and the GPU may be well below its requested clock in
+practice even though the DPM request reads 2200. The DPM level is a request, not an effective frequency, which
+is the same class of error as reading the memory clock at idle earlier in this document.
+
+The cheap ways to settle it: reboot and measure cold, cap the CPU frequency and re-measure, or force the GPU to
+its high DPM level (needs root). None of the recorded results are invalidated: every accepted number came from
+a matched pair built and measured inside one window, and the full power figures were taken when the same code
+delivered them.
