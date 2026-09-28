@@ -1623,3 +1623,37 @@ optimum sitting at 3 is indirect evidence that acceptance is still positive at t
 cut-off policy keyed on acceptance would go in the per-slot draft params, which the server already toggles at
 `server-context.cpp:2999`, and its threshold should be the break-even implied by the table above rather than a
 fixed 90 percent, which would disable a working gain.
+
+---
+
+## The acceptance rate is 0.58, so a 90 percent cut-off would disable a working gain
+
+Date: 2026-09-28, later session
+
+The acceptance rate was the one number missing from the MTP work. The server prints it per task, and after a
+single request at `-c 3000` with depth 3 on natural text:
+
+```
+slot print_timing: id 0 | task 0 | draft acceptance = 0.57576 (   19 accepted /    33 generated), mean len =  2.73
+```
+
+So on the natural distribution the acceptance is **0.576**, not anywhere near 0.9, and the mean accepted
+length is 2.73 tokens. That matters directly:
+
+- A cut-off at 0.90 would switch speculation off on the first task, leaving 21.35 t/s instead of 27.3 to
+  28.2, that is it would give up the whole 24 to 32 percent gain while appearing to work as specified.
+- The break-even is far lower. The depth sweep puts the optimum at 3 and the turn-over between 3 and 4, so
+  acceptance is still positive at the third drafted position, and the operating point 0.576 with a mean
+  accepted length of 2.73 is comfortably above any sensible threshold.
+- The value is observable two ways: the per task line above, and the `Speculative: Total draft tokens
+  accepted by the target model` metric. A cut-off belongs in the per-slot draft params, which the server
+  already toggles at `server-context.cpp:2999`, and its threshold should come from the measured break-even
+  rather than from a fixed target.
+
+## A launcher that enables it
+
+`scripts/run-qwen-mtp.sh` starts the server with MTP at the measured optimum depth 3, with the numbers and the
+reasoning in its header comment, and with MODEL, CTX, PORT, HOST and NPARALLEL overridable by environment. It
+was verified by starting the server, making one request that returned text, and shutting it down; the log
+confirms `creating MTP draft context against the target model`, so the model's own NextN head is the drafter
+and no separate draft model file is needed.
