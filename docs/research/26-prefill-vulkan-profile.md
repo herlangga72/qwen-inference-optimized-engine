@@ -1857,3 +1857,38 @@ earlier note assumed, so locate it before editing. The `n_rs_seq != 0` branch ma
 Gate for this step is the usual one: perplexity 6.0495 on Vulkan, which is the check that would catch the
 ordering mistake, then the concat dropping out of the profile and the pp512 measurement with clocks sampled
 during interleaved runs.
+
+### The graph step was attempted and reverted: the concat has a second, hidden job
+
+The two source path was implemented end to end, including the copy ordering fix, and the perplexity gate
+rejected it immediately:
+
+```
+ggml.c:1779: GGML_ASSERT(view_src == NULL || data_size == 0 || data_size + view_offs <= ggml_nbytes(view_src)) failed
+```
+
+That asserts a view larger than its source. The cause is that the concat does **two** jobs, not one. Besides
+joining the state rows to the new rows, it materialises `ggml_transpose(qkv_mixed)` into a physically
+contiguous `[token][channel]` tensor. `ggml_transpose` returns a *view*, so the transposed tensor's rows are
+not contiguous: its `nb[0]` is the token stride, not four bytes.
+
+Both kernels assume contiguous rows. The CPU kernel asserts `src0->nb[0] == sizeof(float)` and indexes
+`s[i0 + i1*ncs]`, and the shader adds the window tap `i0` straight to the row base. Feeding the transposed view
+in as the input therefore breaks the row indexing and makes the byte offset in `upd_src` wrong, which is what
+the assertion reported.
+
+**The remaining fix is to give the two source kernels explicit input strides** rather than assuming
+contiguity: a row stride alongside the existing `nb01` and `nb02` in the shader, and the row and channel
+strides read from `nb[0]` and `nb[1]` in the CPU kernel. The state tensor does not need this, since it is a
+reshape of the contiguous recurrent buffer view. That is roughly thirty lines across the two kernels.
+
+The alternative, calling `ggml_cont` on the transposed input, costs exactly the 16.9 MB per layer of input
+traffic that this whole change exists to remove, so it defeats the purpose.
+
+Nothing is left half done: the graph step is reverted, the three model files are untouched, and perplexity is
+back to 6.0495. The four inert pieces stay committed, since each is verified not to change behaviour: the op in
+`ggml.c` and the CPU kernel, its shader, its pipelines, and the dispatch branch.
+
+This is the second trap in this one step, after the copy ordering, and the gate caught both. That is the
+process working as intended: a graph change that would have produced plausible but wrong output, especially in
+single token decode where every token is a seam token, was stopped before it could be measured or believed.
