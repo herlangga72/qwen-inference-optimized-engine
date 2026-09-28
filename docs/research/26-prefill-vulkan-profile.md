@@ -1506,3 +1506,68 @@ achieves it is 171 ms.
 
 Gate as before: perplexity 6.0495, which is clock independent, the concat op disappearing from the profile,
 and clocks sampled during the run with the two builds interleaved, since windows here differ by 20 percent.
+
+---
+
+## Both remaining routes are closed as cheap knobs: what the probes established
+
+Date: 2026-09-28, same session
+
+### The tile tiers, measured rather than inferred
+
+A probe printing `configs.size()`, the chosen index, the pipeline name and its denoms:
+
+```
+[tile] mm m=8192 n=512 configs=2 idx=1 matmul_q6_k_q8_1_1 denom0=64 denom1=64
+[tile] mm m=4096 n=512 configs=2 idx=1 matmul_q6_k_q8_1_1 denom0=64 denom1=64
+[tile] mm m=2048 n=512 configs=2 idx=1 matmul_q6_k_q8_1_1 denom0=64 denom1=64
+[tile] mm m=512  n=512 configs=2 idx=1 matmul_q6_k_q8_1_1 denom0=64 denom1=64
+[tile] id m=512  n=512 configs=2 idx=1 matmul_id_subgroup_iq2_s_f32_f16acc_1 denom0=64 denom1=32
+[tile] id m=2048 n=512 configs=2 idx=1 matmul_id_subgroup_iq3_s_q8_1_1       denom0=64 denom1=64
+```
+
+Every op reports two configs, so the `configs.size() == 2` rule fires and anything above 32 on either axis
+takes the second entry. **The large tile in `tc_mm` and `tc_mmqid` is never in the map on this device.** This
+also turns the earlier inference about the MoE selection into a measurement, and shows the narrowed medium
+entry is the one in use, `denom1` 32, with `iq3_s` at 64 as expected after that change was reverted.
+
+### The dense tier is the right tier: the small one is 1.43 times slower
+
+Interleaved, same binary, same window, with `GGML_VK_DENSE_SMALL` forcing the first entry for the dense path
+and the id selector given its own copy so the MoE choice is untouched:
+
+| round | tier | `q6_K` m=8192 per call | rate | pp512 |
+| --- | --- | --- | --- | --- |
+| 1 | medium | 7617.47 us | 2254.77 GFLOPS/s | 214.59 |
+| 1 | small | 10724.8 us | 1601.5 GFLOPS/s | 193.49 |
+| 2 | medium | 7474.8 us | 2297.81 GFLOPS/s | 217.33 |
+| 2 | small | 10667.5 us | 1610.1 GFLOPS/s | 193.56 |
+
+So the dense path is correct on the medium tier, ten percent of pp512 would be lost by moving off it, and
+there is no tier choice left to win. The dense operations run at 2255 to 2298 GFLOPS per second, about a third
+of the 6.7 TFLOPS peak. Anything further has to come from inside the medium dense configuration, and that
+needs the shader's warp arrangement re-derived for that configuration before a single parameter is moved,
+because a wrong move silently skips work, which is the failure mode that produced three of the four broken
+attempts earlier in this document.
+
+Both probes are reverted. Perplexity after the revert is 6.0495 +/- 0.36037.
+
+### Why removing the concat is not a tile change either
+
+The graph builds the conv input at `src/models/delta-net-base.cpp:472` as
+`ggml_concat(conv_states, qkv_mixed, 0)`, and the concat serves two purposes: it gives the separate conv op a
+contiguous window, and it is the source of the state update, which reads its last three rows through a view.
+
+Only the first three output rows of the convolution need the state at all, since output row t consumes the
+four input rows t to t+3 and rows three and up are entirely within the new data. That suggests splitting the
+conv into a small one over a six row joined window and a main one over the new data alone, but the two
+results still have to end up in one tensor, and combining them costs the same 16.9 MB that the concat costs
+now. Every scheme that prepends the state pays that copy somewhere; avoiding it requires a convolution that
+reads the three state rows and the new input rows as two sources, which means changing `GGML_OP_SSM_CONV`
+itself, including its CPU implementation, and then the graph.
+
+Given that, and given that removing all of the concat kernel's own instructions bought only 16 percent, the
+next step before writing that change is to determine how much of the measured 171 ms is execution and how
+much is waiting on the operation that produces `qkv_mixed`, since a rewrite cannot help with the latter. The
+per pass figure is real in the sense that the profiled per op times sum to the wall clock, but that does not
+distinguish the two.
