@@ -1713,3 +1713,23 @@ since it would hurt the small case more. A power of two row stride is a candidat
 the cause, reordering the copy so each workgroup spans a contiguous range across rows rather than one row
 could recover much of the gap without any op change at all, and it is worth one experiment before the larger
 change.
+
+### The stride hypothesis is weakened, and what is left
+
+Two orderings have now been measured at `ub 512`, and both are slow:
+
+| kernel order | rate at 33.8 MB |
+| --- | --- |
+| generic, contiguous element ranges per workgroup | 5.9 GB/s |
+| specialized, one workgroup per row | about 6.9 GB/s, from the 1.16x |
+
+while the same specialized kernel reaches 21.9 GB/s at 8.5 MB. So the traversal order is a minor factor at
+that size and cannot be the main cause, which weakens the power of two stride idea.
+
+What is left is something that depends on how much memory the call touches rather than on how it is walked.
+The footprint is 8.5 MB at `ub 128` and 34 MB at `ub 512`, which is roughly 2100 against 8300 pages of 4 KiB.
+A device TLB of that order thrashing at the larger size would produce exactly this signature, and it would
+also explain why a batch that is four times larger costs 14.7 times more. If that is the cause, the lever is
+the allocator rather than the kernel: the Vulkan backend already has
+`GGML_VK_SUBALLOCATION_BLOCK_SIZE` and related knobs, so allocation granularity and alignment are worth
+looking at before any op change, and it is a much smaller change than a two source convolution.
