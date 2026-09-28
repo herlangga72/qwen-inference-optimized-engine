@@ -957,3 +957,46 @@ pp2048 at `ub 512` has no baseline in this document, so whether the gain holds o
 unconfirmed. The changed build measures 176.85 +/- 0.50 there, which is below pp512 for this workload
 because prefill attention is quadratic in the sequence, and comparing it to nothing would be the same
 mistake this document keeps recording.
+
+---
+
+## pp512 is solid, pp2048 is interference limited on this machine
+
+Date: 2026-09-28, same session
+
+The pp2048 figure recorded as missing above was chased, and the honest outcome is that it cannot be
+established in this session, while pp512 can.
+
+### pp512, five independent measurements per side
+
+| build | pp512 | pool |
+| --- | --- | --- |
+| baseline | 231.52, 231.87, 232.37, 232.98 | 232.2 |
+| with the change | 253.81, 255.10, 255.16, 255.22 | 254.8 |
+
+Per run spreads were 0.3 to 1.0. That is plus 9.5 to 10.1 percent, and it has been reproducible all
+session.
+
+### pp2048 at ub 512, and why no number is claimed
+
+| build | measurement |
+| --- | --- |
+| baseline | 196.28 +/- 47.11 (r=2), 161.70 +/- 0.54 (r=4) |
+| with the change | 176.85 +/- 0.50 (r=2), 177.32 +/- 0.38 (r=2), 195.81 +/- 37.47 (r=4), 189.30 +/- 30.50 (r=6), 214.06 +/- 40.92 (r=6) |
+
+The pattern is that both builds intermittently enter a fast mode that lifts the mean to about 196 to 214
+with spreads of 30 to 47, while the uncontaminated samples sit at 161.70 and 177. The two tight samples
+agree with the pp512 result in both direction and size, which is what the mechanics predict: at ub 512 each
+micro batch has the same shape and the same tokens per expert as pp512, so the same relative gain is
+expected. But that is an expectation supported by two samples, not a measurement, and it is recorded as
+such.
+
+No regression at pp2048 is claimed or observed. What is claimed is that the machine has an intermittent
+mode that affects the longer runs, and that a contaminated mean is not rescued by more repetitions.
+
+### A benchmarking rule for this box
+
+On this machine a run whose spread is more than a few percent is not a measurement. r=2 was not enough for
+pp2048, and both of the wide spreads here came from runs that looked perfectly ordinary at the time. Prefer
+pp512 for acceptance numbers, use r=4 or more for anything longer, and treat a wide spread as a reason to
+re-run rather than as a result to average.
