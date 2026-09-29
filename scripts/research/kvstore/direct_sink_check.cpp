@@ -128,7 +128,7 @@ int main(int argc, char ** argv) {
     const std::string clean = path + ".clean";
     size_t rss_before = 0;
     {
-        llama_io_write_direct w(clean, true);
+        llama_io_write_direct w(clean, true, 0x5eed1234);
         check("writer opened", w.good());
 
         auto hdr = make_status_header(LLAMA_IO_BLOCK);
@@ -147,8 +147,11 @@ int main(int argc, char ** argv) {
 
     size_t rss_after = rss_kib();
     size_t delta = rss_after > rss_before ? rss_after - rss_before : rss_before - rss_after;
-    printf("  %-34s %zu KiB (block is %d bytes)\n", "rss delta over the write", delta, LLAMA_IO_BLOCK);
-    check("rss stays one block", delta <= 256);
+    printf("  %-34s %zu KiB (window is %d bytes, block is %d bytes)\n",
+           "rss delta over the write", delta, LLAMA_IO_WIN, LLAMA_IO_BLOCK);
+    // the store moves blocks in LLAMA_IO_WIN windows, so the floor is one window per
+    // direction, not one block. see docs/research/27-ssd-prompt-cache-feasibility.md
+    check("rss stays one window", delta <= LLAMA_IO_WIN / 1024 + 64);
 
     // ---- read back ----
     {
@@ -221,7 +224,10 @@ int main(int argc, char ** argv) {
     {
         const std::string p2 = clean + ".two";
         {
-            llama_io_write_direct w2(p2, true);
+            // the same explicit generation for both files. the generation is drawn from
+            // /dev/urandom per save by design, so without pinning it the two files differ in
+            // exactly that field and the comparison says nothing
+            llama_io_write_direct w2(p2, true, 0x5eed1234);
             auto hdr = make_status_header(LLAMA_IO_BLOCK);
             w2.set_prefix(hdr.data(), hdr.size());
             for (auto & r : records) {
@@ -280,7 +286,7 @@ int main(int argc, char ** argv) {
         const std::string ta = path + ".tensor_a";
         const std::string tb = path + ".tensor_b";
         for (int k = 0; k < 2; ++k) {
-            llama_io_write_direct w(k == 0 ? ta : tb, true);
+            llama_io_write_direct w(k == 0 ? ta : tb, true, 0x5eed1234);
             w.write_tensor(t, 0, ggml_nbytes(t));
             w.flush();
             check("tensor writer good", w.good());

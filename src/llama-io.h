@@ -43,6 +43,12 @@ public:
 #define LLAMA_IO_BLOCK     4096
 #define LLAMA_IO_BLOCK_HDR 12
 
+// Blocks are framed at LLAMA_IO_BLOCK but moved in windows of this size. One syscall per block
+// costs about 21 us on this volume, which holds the path at 185 MiB/s reads and 273 MiB/s writes
+// whatever the device can do. At 1 MiB it measures 1810 and 1854 MiB/s. Must be a multiple of
+// LLAMA_IO_BLOCK. See docs/research/27-ssd-prompt-cache-feasibility.md
+#define LLAMA_IO_WIN       (1 << 20)
+
 // zlib compatible crc32, so the Python harness and this code agree byte for byte
 uint32_t llama_io_crc32(const void * data, size_t size);
 
@@ -83,7 +89,8 @@ public:
     // reserve the first block for a file header. call before any write
     void set_prefix(const void * data, size_t size);
 
-    // seal the final partial block. required, the destructor reports if it is missing
+    // seal the final partial block and write out the window. required, the destructor
+    // reports if it is missing
     void flush();
 
     size_t n_bytes()  override { return n_logical; }
@@ -94,7 +101,12 @@ public:
 
 private:
     void flush_block();
+
+    // framed blocks are appended to the window and written by the window, so one syscall
+    // covers LLAMA_IO_WIN / LLAMA_IO_BLOCK blocks instead of one
     void put_block(size_t off, size_t used);
+    void append_window(const void * src, size_t size);
+    void flush_window();
 
     int      fd        = -1;
     bool     framed    = true;
@@ -106,6 +118,10 @@ private:
     bool     flushed   = false;
     int      err       = 0;
     uint32_t gen_      = 0;
+
+    uint8_t * win      = nullptr;
+    size_t    win_fill = 0;   // bytes framed into the window and not yet written
+    size_t    win_off  = 0;   // file offset of win[0]
 };
 
 // Reader for the same two layouts, streaming one block at a time.
@@ -131,10 +147,16 @@ public:
 
 private:
     bool next_block();
+    // pull the next window at blk_off. false at end of file or on error, and a read shorter
+    // than one block is a torn tail
+    bool refill_window();
 
     int      fd       = -1;
     bool     framed   = true;
-    uint8_t * blk     = nullptr;
+    uint8_t * win     = nullptr;
+    uint8_t * blk     = nullptr;   // the current block, a window inside win
+    size_t   win_len  = 0;   // whole blocks available in the window
+    size_t   win_pos  = 0;   // bytes of the window already served
     size_t   avail    = 0;   // payload bytes in the current block
     size_t   pos      = 0;   // payload bytes consumed
     size_t   blk_off  = 0;

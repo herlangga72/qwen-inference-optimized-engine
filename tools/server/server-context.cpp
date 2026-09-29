@@ -296,6 +296,12 @@ struct server_slot {
 
     server_prompt prompt;
 
+    // set by prompt_load when a whole sequence state was restored into this slot, and consumed
+    // where n_past is finalized. the prompt processing below uses it to tell a restored prefix
+    // apart from a slot that merely happens to hold part of the context. see the
+    // "forcing full prompt re-processing" branch
+    bool prompt_restored = false;
+
     bool prompt_save(server_prompt_cache & prompt_cache) const {
         if (prompt.tokens.size() == 0) {
             return false;
@@ -314,18 +320,19 @@ struct server_slot {
             return false;
         }
 
-        llama_state_seq_get_data_ext(ctx_tgt, cur->data.main.data(), cur_size_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE);
-        if (ctx_dft) {
-            llama_state_seq_get_data_ext(ctx_dft, cur->data.drft.data(), cur_size_dft, id, LLAMA_STATE_SEQ_FLAGS_NONE);
-        }
-
-        return true;
+        // RAM or a file, depending on the configuration. a disk write that fails drops the
+        // entry rather than leaving one that cannot be restored
+        return prompt_cache.save(cur, ctx_tgt, ctx_dft, id, prompt.tokens);
     }
 
     bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens) {
-        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id);
+        bool restored = false;
+
+        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id, &restored);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
+        } else {
+            prompt_restored = restored;
         }
 
         return res;
@@ -333,6 +340,9 @@ struct server_slot {
 
     void prompt_clear() {
         SLT_TRC(*this, "clearing prompt with %zu tokens\n", prompt.tokens.size());
+
+        // the arena no longer holds a restored state
+        prompt_restored = false;
 
         mem.seq_rm(id, -1, -1);
 
@@ -829,6 +839,51 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
 //
 // server_context_impl (private implementation)
 //
+
+// Names the cache namespace for the disk prompt cache. Everything that changes what a serialized
+// sequence state means goes in, so a file written under one configuration is never read back
+// under another. The engine also writes the model arch into the state and refuses a mismatch,
+// which catches a swapped model file.
+static std::string server_cache_fingerprint(const common_params & params) {
+    std::string s;
+    s += params.model.path;
+    s += "|n_ctx="   + std::to_string(params.n_ctx);
+    s += "|type_k="  + std::to_string((int) params.cache_type_k);
+    s += "|type_v="  + std::to_string((int) params.cache_type_v);
+    s += "|n_par="   + std::to_string(params.n_parallel);
+    s += "|unified=" + std::to_string((int) params.kv_unified);
+    s += "|swa="     + std::to_string((int) params.swa_full);
+    s += "|fa="      + std::to_string((int) params.flash_attn_type);
+
+    // an entry file holds the draft context's state as well when speculative decoding is on, and a
+    // draft state is only valid for the draft model and draft KV types that wrote it. two models of
+    // the same architecture have the same state size, so a state from the wrong draft model loads
+    // cleanly instead of failing, which is why this cannot be left to a size check. the target
+    // payload would be valid either way, so this also splits the cache between a run with a draft
+    // and a run without one, which is the conservative side to split on
+    if (!params.speculative.draft.mparams.path.empty()) {
+        s += "|draft="    + params.speculative.draft.mparams.path;
+        s += "|draft_tk=" + std::to_string((int) params.speculative.draft.cache_type_k);
+        s += "|draft_tv=" + std::to_string((int) params.speculative.draft.cache_type_v);
+    }
+
+    // FNV-1a, same construction as the entry name in server-task.cpp
+    uint64_t h = 1469598103934665603ull;
+    for (unsigned char c : s) {
+        h ^= c;
+        h *= 1099511628211ull;
+    }
+
+    static const char * digits = "0123456789abcdef";
+
+    std::string out(16, '0');
+    for (int i = 0; i < 16; ++i) {
+        out[15 - i] = digits[h & 0xF];
+        h >>= 4;
+    }
+
+    return out;
+}
 
 struct server_context_impl {
     friend struct server_context;
@@ -1348,17 +1403,55 @@ private:
             batch.init(std::max(n_batch, params_base.n_parallel), n_embd);
         }
 
-        if (params_base.cache_ram_mib != 0) {
-            if (params_base.cache_ram_mib < 0) {
-                SRV_TRC("prompt cache is enabled, size limit: %s\n", "no limit");
-            } else {
-                SRV_TRC("prompt cache is enabled, size limit: %d MiB\n", params_base.cache_ram_mib);
-            }
-            SRV_TRC("%s", "use `--cache-ram 0` to disable the prompt cache\n");
+        {
+            // the prompt cache is enabled by either a RAM budget or a disk path. with a disk
+            // path the payload lives in files and the budget is how much disk it may use.
+            // a size of 0 disables, as it does for --cache-ram
+            const bool cache_disk   = !params_base.cache_disk_path.empty() && params_base.cache_disk_mib != 0;
+            const bool cache_enable = params_base.cache_ram_mib != 0 || cache_disk;
 
-            prompt_cache = std::make_unique<server_prompt_cache>(params_base.cache_ram_mib, n_ctx);
-        } else {
-            SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
+            if (cache_enable) {
+                if (cache_disk) {
+                    SRV_TRC("prompt cache is enabled on disk at %s, size limit: %d MiB\n",
+                            params_base.cache_disk_path.c_str(), params_base.cache_disk_mib);
+                    SRV_TRC("%s", "the entries are files, so host RAM holds only the token lists\n");
+
+                    // a directory that cannot be made or written is a disabled cache, not a
+                    // failed start
+                    std::error_code ec;
+                    if (!std::filesystem::is_directory(params_base.cache_disk_path, ec)) {
+                        std::filesystem::create_directories(params_base.cache_disk_path, ec);
+                        if (ec) {
+                            SRV_WRN("prompt cache directory %s cannot be created (%s), disabling the prompt cache\n",
+                                    params_base.cache_disk_path.c_str(), ec.message().c_str());
+
+                            prompt_cache = nullptr;
+                        }
+                    }
+
+                    if (std::filesystem::is_directory(params_base.cache_disk_path, ec)) {
+                        prompt_cache = std::make_unique<server_prompt_cache>(
+                                params_base.cache_disk_path, server_cache_fingerprint(params_base),
+                                params_base.cache_disk_mib, n_ctx);
+
+                        // entries a previous run left behind are still good, and their token
+                        // lists are inside their files
+                        prompt_cache->rescan();
+                    }
+                } else {
+                    if (params_base.cache_ram_mib < 0) {
+                        SRV_TRC("prompt cache is enabled, size limit: %s\n", "no limit");
+                    } else {
+                        SRV_TRC("prompt cache is enabled, size limit: %d MiB\n", params_base.cache_ram_mib);
+                    }
+                    SRV_TRC("%s", "use `--cache-ram 0` to disable the prompt cache\n");
+
+                    prompt_cache = std::make_unique<server_prompt_cache>(
+                            std::string(), std::string(), params_base.cache_ram_mib, n_ctx);
+                }
+            } else {
+                SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` or `--cache-disk-path DIR` to enable it\n");
+            }
         }
         SRV_TRC("%s", "for more info see https://github.com/ggml-org/llama.cpp/pull/16391\n");
 
@@ -1418,8 +1511,11 @@ private:
         metrics.init();
 
         if (params_base.cache_idle_slots) {
-            if (params_base.cache_ram_mib == 0) {
-                SRV_WRN("%s", "--cache-idle-slots requires --cache-ram, disabling\n");
+            const bool cache_storage = params_base.cache_ram_mib != 0 ||
+                (!params_base.cache_disk_path.empty() && params_base.cache_disk_mib != 0);
+
+            if (!cache_storage) {
+                SRV_WRN("%s", "--cache-idle-slots requires --cache-ram or --cache-disk-path, disabling\n");
                 params_base.cache_idle_slots = false;
             } else {
                 if (params_base.kv_unified) {
@@ -1602,8 +1698,18 @@ private:
                             f_sim_best, slot_prompt_similarity, f_keep);
                 }
 
-                // if we are about to lose a large portion of the existing context - save it in the prompt cache
-                if (f_keep < 0.5f) {
+                // Engage the prompt cache whenever this request does not cleanly extend what the
+                // slot already holds, which is exactly when the slot's state is about to be
+                // truncated and lost. f_keep is the fraction of the slot's prompt this request
+                // shares, so 1.0 means a clean extension and the slot serves it from the arena
+                // with no I/O at all.
+                //
+                // This was f_keep < 0.5f, and the difference matters for a workload whose
+                // prompts are mostly a shared preamble: a conversation that is 85 percent
+                // preamble has f_keep above 0.5 for every request that replaces it, so the cache
+                // was never written and never read, and the reuse collapsed to almost nothing.
+                // Measured: docs/research/30-ssd-prompt-cache-results.md, "The f_keep gate".
+                if (f_keep < 1.0f) {
                     update_cache = true;
                 }
             }
@@ -1643,6 +1749,9 @@ private:
                 SRV_TRC("%s", "updating prompt cache\n");
 
                 const int64_t t_start = ggml_time_us();
+
+                // the flag describes this assignment only, so clear it before the load can set it
+                ret->prompt_restored = false;
 
                 ret->prompt_save(*prompt_cache);
 
@@ -3362,9 +3471,14 @@ private:
                                         }
                                     );
 
-                                    bool do_reset = it == slot.prompt.checkpoints.rend();
+                                    // the threshold is the earliest position the kv memory has to
+                                    // hold for a checkpoint to be of any use
+                                    SLT_TRC(slot, "pos_min = %d, pos_next = %d, pos_min_thold = %d, n_swa = %d, n_past = %d, restored = %d\n",
+                                            pos_min, pos_next, pos_min_thold, n_swa, n_past, (int) slot.prompt_restored);
 
-                                    if (!do_reset) {
+                                    const bool have_checkpoint = it != slot.prompt.checkpoints.rend();
+
+                                    if (have_checkpoint) {
                                         // restore the context checkpoint
                                         it->load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
                                         it->load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
@@ -3374,13 +3488,43 @@ private:
                                         pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
                                         n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) it->n_tokens);
                                         SLT_TRC(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);
-                                    }
-
-                                    if (do_reset) {
+                                    } else if (slot.prompt_restored && n_past == (int) slot.prompt.n_tokens() &&
+                                               n_past < slot.task->n_tokens()) {
+                                        // the whole state was restored from the prompt cache and
+                                        // the restored prompt is a prefix of the input, with
+                                        // nothing to diverge from, so the arena holds exactly every
+                                        // position n_past refers to, including the recurrent
+                                        // summary that sits at the continuation point.
+                                        //
+                                        // on a hybrid model seq_pos_min is that summary's position,
+                                        // which is the end of the state, so the test above fires on
+                                        // every restore and must not be read as a missing cache.
+                                        // a restore that does NOT cover the whole prefix leaves old
+                                        // cells past the divergence, and those still have to go,
+                                        // which is what the reset below does
+                                        //
+                                        // n_past < task.n_tokens() is required, not implied: when
+                                        // the request is exactly the restored prompt there is
+                                        // nothing left to evaluate, and [TAG_PROMPT_LOGITS] below
+                                        // then decrements n_past and asks the memory to drop the
+                                        // last position. A recurrent memory can only do that with a
+                                        // per-token rollback snapshot, n_rs_seq, which is 0 by
+                                        // default, so the removal fails and the abort in
+                                        // common_context_seq_rm takes the server down. Asking for
+                                        // one more token than the state holds keeps the trim empty
+                                        // and the summary untouched. It costs nothing on the case
+                                        // this exists for, a prompt that extends what was cached
+                                        SLT_TRC(slot, "keeping the restored prompt: pos_min = %d >= pos_min_thold = %d is the recurrent summary position, the restore covers the whole prefix, and %d tokens are left to evaluate\n",
+                                                pos_min, pos_min_thold, (int) slot.task->n_tokens() - n_past);
+                                    } else {
                                         SLT_TRC(slot, "forcing full prompt re-processing due to lack of cache data (likely due to SWA or hybrid/recurrent memory, see %s)\n",
                                                 "https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055");
                                         pos_next = 0;
                                         n_past = 0;
+
+                                        // the restored state is being thrown away, so it may not
+                                        // be treated as a restored prefix later
+                                        slot.prompt_restored = false;
                                     }
                                 }
                             }

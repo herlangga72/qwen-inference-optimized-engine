@@ -934,6 +934,17 @@ extern "C" {
                           size_t   n_token_capacity,
                           size_t * n_token_count_out);
 
+    // Read the token list out of a saved sequence state file without restoring it and without a
+    // context. Returns the number of tokens, or 0 on any error. Pass tokens_out NULL to ask only
+    // for the count. This is what lets a prompt cache find the entries a previous run left on
+    // disk: the file carries its own tokens as well as the state.
+    // See docs/superpowers/specs/2026-09-28-ssd-prompt-cache-design.md
+    LLAMA_API size_t llama_state_seq_file_tokens(
+                      const char * filepath,
+                     llama_token * tokens_out,
+                          size_t   n_token_capacity,
+                          size_t * n_token_count_out);
+
 #define LLAMA_STATE_SEQ_FLAGS_NONE 0
 
 // for backwards-compat

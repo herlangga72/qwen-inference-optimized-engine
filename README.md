@@ -17,6 +17,7 @@ are in `docs/research/`, the designs are in `docs/superpowers/`, and the harness
 | KV types | `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `q5_0`, `q5_1`, `iq4_nl` | the same, plus `planar3_0`, a 3 bit type |
 | Park and unpark | host buffered, through `--slot-save-path` | `llama_state_seq_save_file_direct` and `llama_state_seq_load_file_direct`, streamed through `O_DIRECT` |
 | Store format | an unframed `LLAMA_STATE_SEQ` v3 stream | 4 KB blocks, 12 byte frame header carrying a per-save generation, `LLAMA_STATE_SEQ_VERSION` 4. Store files written by earlier versions are not readable. |
+| Prompt cache | host RAM only, `--cache-ram`, lost on restart, and a slot is parked only when a request would lose half of it | entries are content addressed files, `--cache-disk-path` and `--cache-disk-mib`, read and written through the same `O_DIRECT` store and rescanned at startup so a restart keeps them. A slot is parked as soon as a request would truncate it |
 
 The dropped architectures are not merely untested here. Their graph code is gone, so the engine only
 builds and only reasons about what this project runs. That is most of the difference in source size,
@@ -54,6 +55,7 @@ continues exactly as if the session had never left.
 | Recurrent state | return a view of the cache instead of gathering rows, when the active rows are already contiguous | removes a per-token gather and its write-back; outputs byte-identical to before |
 | MTP speculation | speculate with the model's own MTP head, no separate draft file | 1.27x on CPU, 1.36x on Vulkan, single stream |
 | Tokenizer | keep the merge rank table over string views into the vocab's own bytes | byte identical output, and the per-lookup allocations are gone |
+| Prompt cache, disk tier | entries as files instead of host RAM, named by the cache configuration and the prefix, rescanned at startup | a returning conversation restores 1759 of its 2068 tokens, removing 88.6 percent of that turn's prompt evaluation. A 40 request agentic loop removes 82.5 percent of prompt processing over the whole run and 90.6 percent in steady state |
 
 Two of these trade CPU for Vulkan, deliberately. The target is a Radeon 680M, where token generation
 was the bottleneck, and the delta net output projection change is 2.2x faster on Vulkan token
@@ -105,12 +107,36 @@ loading the model. Note that this makes disk the binding constraint, not RAM: th
   never parked. Isolated RSS delta across park and unpark: 0 KiB on a 55 MiB state.
 - Saves are reproducible and intact: four consecutive runs with no damaged blocks, cross-checked by a
   Python validator that shares no code with the C++ reader.
+- The server level prompt cache end to end: a returning conversation is served from its file instead of
+  being reprocessed, the restore survives a server restart, a truncated entry is a miss and not an
+  error, and the answer matches a run with no cache at all.
+- Every entry round trips byte for byte, `differing=0`, on the 0.8B on CPU, the 0.8B on Vulkan and the
+  35B on Vulkan, and a restored state continues identically.
+- Eviction under the budget removes the oldest entry, never exceeds the limit and never leaks a file,
+  checked at a budget that holds two entries; concurrent traffic over four slots under such a budget
+  leaves every surviving file intact under the independent validator.
 
 ## What is not done
 
-- The server level path is not exercised. Two sessions parking and restoring through `llama-server`
-  is the acceptance test, and no in-tree automated test covers it (it needs Python dependencies that
-  did not build here). The public C API is exercised, on a fresh context into an empty sequence.
+- The server level path is exercised by the harnesses in `scripts/research/ssdcache`, not by this
+  project's own suite, which still cannot run here (it needs Python dependencies that do not build).
+  Those harnesses are the substitute and they are narrower than that suite. `docs/research/30-ssd-prompt-cache-results.md`
+  lists exactly what they do not cover.
+- The prompt cache does not share a prefix between conversations. Ten conversations with the same
+  system prompt store it ten times, which is where the disk cost comes from. The design for fixing it
+  is stage 2 of `docs/superpowers/specs/2026-09-28-ssd-prompt-cache-design.md`, and it is design only:
+  content addressed attention blocks would remove 47 percent of the write volume, and no more, because
+  of the next item.
+- The recurrent state is one blob per conversation, 62.8 MiB on the 35B, fixed and independent of
+  context length. It is not derivable from a subset of tokens, so it cannot be split or shared, and for
+  short prefixes it is most of what is stored.
+- With the Vulkan driver in the process, prompt processing is not reproducible run to run, so a cache
+  hit reproduces the computation that wrote the entry rather than a fresh one. With the driver kept out
+  of the process it is bit exact, in every batch and chunk configuration tested.
+  `docs/research/31-prefill-nondeterminism-localisation.md`
+- One concurrency run in thirteen returned HTTP 500 for 16 of its 24 requests, and it was not
+  reproduced in ten further attempts. It is not explained and it is not attributable to the cache, and
+  the harness now records enough for the next occurrence to name its own cause.
 - The pages file has no checksum, so it has no way to detect a lost write.
 - Store files written before this work are not readable. The format changed: 4 KB blocks, a 12 byte
   frame header carrying a generation, and `LLAMA_STATE_SEQ_VERSION` 4.

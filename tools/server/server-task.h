@@ -586,11 +586,20 @@ struct server_prompt {
 };
 
 struct server_prompt_data {
+    // host RAM payload, used when no disk path is configured. the two are never both set.
     std::vector<uint8_t> main;
     std::vector<uint8_t> drft;
 
+    // disk payload, used when --cache-disk-path is set. the file also carries the token list,
+    // which is what the entry is matched on when it is read back.
+    std::string path_tgt;
+    std::string path_dft;
+
+    size_t size_tgt = 0;
+    size_t size_dft = 0;
+
     size_t size() const {
-        return main.size() + drft.size();
+        return main.size() + drft.size() + size_tgt + size_dft;
     }
 };
 
@@ -610,12 +619,26 @@ struct server_prompt_cache_state {
 };
 
 struct server_prompt_cache {
-    server_prompt_cache(int32_t limit_size_mib, size_t limit_tokens) {
+    server_prompt_cache(
+            const std::string & disk_path,
+            const std::string & fingerprint,
+            int32_t limit_size_mib,
+            size_t limit_tokens) {
+        this->disk_path    = disk_path;
+        this->fingerprint  = fingerprint;
         this->limit_size   = 1024ull*1024ull*(limit_size_mib < 0 ? 0 : limit_size_mib);
         this->limit_tokens = limit_tokens;
     }
 
     std::list<server_prompt_cache_state> states;
+
+    // empty means the payload stays in host RAM, which is the behaviour without
+    // --cache-disk-path
+    std::string disk_path;
+
+    // hash of the configuration that produced the payloads, part of every entry file name, so
+    // a file written under one model or KV type can never be read under another
+    std::string fingerprint;
 
     // in bytes, 0 = no limit
     size_t limit_size = 0;
@@ -627,11 +650,40 @@ struct server_prompt_cache {
 
     size_t n_tokens() const;
 
+    bool disk() const {
+        return !disk_path.empty();
+    }
+
     server_prompt_cache_state * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft);
 
-    bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot);
+    // write the payload of an entry alloc() just registered. on failure the entry is dropped
+    // and false is returned, so a request is never served from a file that was not written
+    bool save(
+            server_prompt_cache_state * st,
+            llama_context * ctx_tgt,
+            llama_context * ctx_dft,
+            llama_seq_id seq_id,
+            const server_tokens & tokens);
+
+    // drop an entry and its payload
+    void discard(server_prompt_cache_state * st);
+
+    // register every entry file already in the cache directory. the token list of an entry is
+    // inside its file, so a restart keeps the cache instead of orphaning what is on disk
+    void rescan();
+
+    // true on success. restored, when given, says whether a state was actually loaded into the
+    // slot, which is not the same thing: a load that finds nothing better than what the slot
+    // already holds succeeds and changes nothing
+    bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, bool * restored = nullptr);
 
     void update();
+
+    // name of the payload file for a prefix. depends only on the configuration and the
+    // tokens, so the same prefix always lands in the same file
+    std::string entry_path(const server_tokens & tokens, bool drft) const;
+
+    void unlink_state(const server_prompt_cache_state & st);
 };
 
 // used exclusively by router mode

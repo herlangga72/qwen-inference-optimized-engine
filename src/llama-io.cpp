@@ -36,26 +36,64 @@ void llama_io_read_i::read_string(std::string & str) {
 }
 
 // zlib crc32, same polynomial and same initial and final xor, so the Python harness and
-// this code produce identical bytes
+// this code produce identical bytes.
+//
+// Sliced by eight. The byte at a time loop this replaced ran at 519 MiB/s, which held the whole
+// store there: the reader checksums every block, so it could not exceed that, and the writer
+// checksums once and the verify pass checksums again. Slicing computes the same value with the
+// same tables, one byte of table lookup per byte of input instead of one per byte per bit.
+// See docs/research/29-store-io-batching-results.md
 uint32_t llama_io_crc32(const void * data, size_t size) {
-    static uint32_t table[256];
-    static bool init = false;
+    static uint32_t table[8][256];
 
+    static bool init = false;
     if (!init) {
         for (uint32_t i = 0; i < 256; ++i) {
             uint32_t c = i;
             for (int k = 0; k < 8; ++k) {
                 c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
             }
-            table[i] = c;
+            table[0][i] = c;
+        }
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = table[0][i];
+            for (int k = 1; k < 8; ++k) {
+                c = table[0][c & 0xFF] ^ (c >> 8);
+                table[k][i] = c;
+            }
         }
         init = true;
     }
 
-    uint32_t c = 0xFFFFFFFFu;
     const uint8_t * p = (const uint8_t *) data;
-    for (size_t i = 0; i < size; ++i) {
-        c = table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
+    size_t left = size;
+
+    uint32_t c = 0xFFFFFFFFu;
+
+    // the eight bytes are folded in lowest address first, which is what a little endian load
+    // gives. this tree is x86-64 only.
+    while (left >= 8) {
+        uint64_t v = 0;
+        memcpy(&v, p, sizeof(v));
+        v ^= c;
+
+        c = table[7][(v      ) & 0xFF] ^
+            table[6][(v >>  8) & 0xFF] ^
+            table[5][(v >> 16) & 0xFF] ^
+            table[4][(v >> 24) & 0xFF] ^
+            table[3][(v >> 32) & 0xFF] ^
+            table[2][(v >> 40) & 0xFF] ^
+            table[1][(v >> 48) & 0xFF] ^
+            table[0][(v >> 56) & 0xFF];
+
+        p    += 8;
+        left -= 8;
+    }
+
+    while (left > 0) {
+        c = table[0][(c ^ *p) & 0xFF] ^ (c >> 8);
+        p++;
+        left--;
     }
 
     return c ^ 0xFFFFFFFFu;
@@ -67,6 +105,17 @@ static void * io_alloc_block() {
         return nullptr;
     }
     memset(p, 0, LLAMA_IO_BLOCK);
+    return p;
+}
+
+// one window buffer for both directions. O_DIRECT wants the buffer aligned to the block
+// size, so an aligned window is aligned for every block in it.
+static void * io_alloc_window() {
+    void * p = nullptr;
+    if (posix_memalign(&p, LLAMA_IO_BLOCK, LLAMA_IO_WIN) != 0) {
+        return nullptr;
+    }
+    memset(p, 0, LLAMA_IO_WIN);
     return p;
 }
 
@@ -132,26 +181,42 @@ llama_io_write_direct::llama_io_write_direct(const std::string & path, bool fram
         return;
     }
 
+    win = (uint8_t *) io_alloc_window();
+    if (!win) {
+        err = ENOMEM;
+        ::close(fd);
+        fd = -1;
+        return;
+    }
+
     // block 0 is reserved for the file header
     block_off = LLAMA_IO_BLOCK;
+    win_off   = LLAMA_IO_BLOCK;
 }
 
 llama_io_write_direct::~llama_io_write_direct() {
-    // a missing flush loses the final partial block, so do it rather than report it
-    if (!flushed && framed) {
+    // a missing flush loses the final partial block and whatever is still in the window,
+    // so do it rather than report it
+    if (!flushed) {
         flush();
     }
     if (fd >= 0) {
         ::close(fd);
     }
     free(blk);
+    free(win);
 }
 
 void llama_io_write_direct::set_prefix(const void * data, size_t size) {
-    if (err || !blk) {
+    if (err || !blk || !win) {
         return;
     }
     if (size > LLAMA_IO_BLOCK) {
+        err = EINVAL;
+        return;
+    }
+    if (win_fill != 0 || block_off != LLAMA_IO_BLOCK) {
+        // the prefix is block 0, so it cannot follow any other block
         err = EINVAL;
         return;
     }
@@ -159,10 +224,56 @@ void llama_io_write_direct::set_prefix(const void * data, size_t size) {
     memset(blk, 0, LLAMA_IO_BLOCK);
     memcpy(blk, data, size);
 
-    err = io_pwrite_all(fd, blk, LLAMA_IO_BLOCK, 0);
+    // block 0 goes into the window with the frames that follow it, so a file is opened with
+    // one write rather than two
+    win_off = 0;
+    append_window(blk, LLAMA_IO_BLOCK);
+}
+
+void llama_io_write_direct::append_window(const void * src, size_t size) {
+    if (err || !win || size == 0) {
+        return;
+    }
+
+    if (win_fill + size > LLAMA_IO_WIN) {
+        flush_window();
+        if (err) {
+            return;
+        }
+    }
+
+    memcpy(win + win_fill, src, size);
+    win_fill += size;
+
+    if (win_fill == LLAMA_IO_WIN) {
+        flush_window();
+    }
+}
+
+void llama_io_write_direct::flush_window() {
+    if (err || !win || win_fill == 0) {
+        return;
+    }
+
+    err = io_pwrite_all(fd, win, win_fill, win_off);
+    if (err) {
+        return;
+    }
+
+    win_off  += win_fill;
+    win_fill  = 0;
 }
 
 void llama_io_write_direct::put_block(size_t off, size_t used) {
+    if (err || !blk || !win) {
+        return;
+    }
+    // frames go out in order, so the offset the caller expects is the one the window is at
+    if (off != win_off + win_fill) {
+        err = EINVAL;
+        return;
+    }
+
     uint32_t u = (uint32_t) used;
     uint32_t c = llama_io_crc32(blk + LLAMA_IO_BLOCK_HDR, used);
 
@@ -171,7 +282,7 @@ void llama_io_write_direct::put_block(size_t off, size_t used) {
     memcpy(blk + 8, &gen_, sizeof(gen_));
     memset(blk + LLAMA_IO_BLOCK_HDR + used, 0, LLAMA_IO_BLOCK - LLAMA_IO_BLOCK_HDR - used);
 
-    err = io_pwrite_all(fd, blk, LLAMA_IO_BLOCK, off);
+    append_window(blk, LLAMA_IO_BLOCK);
     if (err) {
         return;
     }
@@ -209,6 +320,11 @@ void llama_io_write_direct::write(const void * src, size_t size) {
             err = EINVAL;
             return;
         }
+        // plain writes go straight out, so anything buffered has to land first
+        flush_window();
+        if (err) {
+            return;
+        }
         err = io_pwrite_all(fd, src, size, block_off);
         if (err) {
             return;
@@ -222,8 +338,11 @@ void llama_io_write_direct::write(const void * src, size_t size) {
     size_t left = size;
     const size_t cap = LLAMA_IO_BLOCK - LLAMA_IO_BLOCK_HDR;
 
-    // a logical write never straddles a block boundary. a record that is split cannot be
-    // read back, because the block header is what says where the records in it end.
+    // A write smaller than one block payload is placed so it does not straddle a boundary, which
+    // keeps a logical record inside one frame. A larger write, which is what the tensor path now
+    // produces, fills whole blocks and leaves its remainder in the next one, so the byte stream
+    // is preserved and the reader, which reassembles across blocks, gets it back unchanged. Only
+    // the stream matters here: this reader has no record parser to keep in sync.
     if (left <= cap) {
         if (fill + left > LLAMA_IO_BLOCK) {
             flush_block();
@@ -254,10 +373,12 @@ void llama_io_write_direct::write(const void * src, size_t size) {
 }
 
 void llama_io_write_direct::write_tensor(ggml_tensor * tensor, size_t offset, size_t size) {
-    // chunked so host memory stays one block, whatever the tensor size. framed writes keep
-    // a chunk inside one block payload, plain writes are whole blocks by contract.
-    const size_t chunk = framed ? LLAMA_IO_BLOCK - LLAMA_IO_BLOCK_HDR : LLAMA_IO_BLOCK;
-    std::vector<uint8_t> tmp(chunk);
+    // one device copy per window, not one per block. on a device backend a 4 KB
+    // ggml_backend_tensor_get per block costs more than the copy inside it, which held the whole
+    // store at 38 MiB/s on Vulkan while the CPU path did 450. write() splits the stream into
+    // blocks and the reader reassembles it, so the copy granularity here does not change what
+    // the file means. see docs/research/29-store-io-batching-results.md
+    std::vector<uint8_t> tmp(std::min<size_t>(LLAMA_IO_WIN, size));
 
     for (size_t done = 0; done < size && !err; ) {
         const size_t take = std::min(tmp.size(), size - done);
@@ -271,6 +392,7 @@ void llama_io_write_direct::flush() {
     if (!flushed && framed) {
         flush_block();
     }
+    flush_window();
     flushed = true;
 }
 
@@ -280,50 +402,64 @@ size_t llama_io_verify_direct(const std::string & path, uint32_t gen) {
         return (size_t) -1;
     }
 
-    void * blk = io_alloc_block();
-    if (!blk) {
+    // a window at a time, because one syscall per block is 9.8x off the device and this pass
+    // runs over the whole file on every save
+    uint8_t * win = (uint8_t *) io_alloc_window();
+    if (!win) {
         ::close(fd);
         return (size_t) -1;
     }
 
-    const uint8_t * p = (const uint8_t *) blk;
     size_t   bad      = 0;
     size_t   off      = LLAMA_IO_BLOCK; // block 0 is the file header, not a frame
     uint32_t expected = gen;
-    for (;;) {
-        const ssize_t n = ::pread(fd, blk, LLAMA_IO_BLOCK, (off_t) off);
-        if (n == 0) {
-            break;
-        }
+    bool     done     = false;
+
+    while (!done) {
+        const ssize_t n = ::pread(fd, win, LLAMA_IO_WIN, (off_t) off);
         if (n < 0) {
             bad = (size_t) -1;
             break;
         }
-        if (n < (ssize_t) LLAMA_IO_BLOCK) {
-            bad++; // a torn tail
+        if (n == 0) {
             break;
         }
 
-        uint32_t used = 0;
-        uint32_t crc  = 0;
-        uint32_t bgen = 0;
-        memcpy(&used, p, 4);
-        memcpy(&crc,  p + 4, 4);
-        memcpy(&bgen, p + 8, 4);
+        size_t whole = (size_t) n;
+        if (whole < LLAMA_IO_BLOCK) {
+            bad++; // a torn tail
+            break;
+        }
+        if (whole % LLAMA_IO_BLOCK) {
+            bad++; // a partial block at the tail
+        }
+        whole -= whole % LLAMA_IO_BLOCK;
 
-        if (used == 0 || used > LLAMA_IO_BLOCK - LLAMA_IO_BLOCK_HDR ||
-            llama_io_crc32(p + LLAMA_IO_BLOCK_HDR, used) != crc) {
-            bad++;
-        } else if (expected == 0) {
-            expected = bgen; // adopt the generation of the first intact frame
-        } else if (bgen != expected) {
-            bad++; // a frame from a different save of this file
+        for (size_t b = 0; b < whole; b += LLAMA_IO_BLOCK) {
+            const uint8_t * p = win + b;
+
+            uint32_t used = 0;
+            uint32_t crc  = 0;
+            uint32_t bgen = 0;
+            memcpy(&used, p, 4);
+            memcpy(&crc,  p + 4, 4);
+            memcpy(&bgen, p + 8, 4);
+
+            if (used == 0 || used > LLAMA_IO_BLOCK - LLAMA_IO_BLOCK_HDR ||
+                llama_io_crc32(p + LLAMA_IO_BLOCK_HDR, used) != crc) {
+                bad++;
+            } else if (expected == 0) {
+                expected = bgen; // adopt the generation of the first intact frame
+            } else if (bgen != expected) {
+                bad++; // a frame from a different save of this file
+            }
         }
 
-        off += LLAMA_IO_BLOCK;
+        off += whole;
+        done = (size_t) n < LLAMA_IO_WIN;
     }
 
-    free(blk);
+    free(win);
     ::close(fd);
 
     return bad;
@@ -340,8 +476,8 @@ llama_io_read_direct::llama_io_read_direct(const std::string & path, bool framed
         return;
     }
 
-    blk = (uint8_t *) io_alloc_block();
-    if (!blk) {
+    win = (uint8_t *) io_alloc_window();
+    if (!win) {
         err = ENOMEM;
         ::close(fd);
         fd = -1;
@@ -356,27 +492,47 @@ llama_io_read_direct::~llama_io_read_direct() {
     if (fd >= 0) {
         ::close(fd);
     }
-    free(blk);
+    free(win);
 }
 
-bool llama_io_read_direct::next_block() {
-    if (err || !blk) {
-        return false;
-    }
-
-    ssize_t n = ::pread(fd, blk, LLAMA_IO_BLOCK, (off_t) blk_off);
+bool llama_io_read_direct::refill_window() {
+    const ssize_t n = ::pread(fd, win, LLAMA_IO_WIN, (off_t) blk_off);
     if (n < 0) {
         err = errno ? errno : EIO;
         return false;
     }
     if (n < (ssize_t) LLAMA_IO_BLOCK) {
-        // a short block is a torn tail, not a payload
-        eof   = true;
-        avail = 0;
-        pos   = 0;
+        // fewer than one whole block is left, so this is a torn tail and not a payload
+        eof     = true;
+        win_len = 0;
+        win_pos = 0;
+        avail   = 0;
+        pos     = 0;
         return false;
     }
 
+    // a remainder below one block is a torn tail. it is not served, and the next refill reads
+    // it at blk_off, finds it short and rejects it there.
+    win_len = (size_t) n - (size_t) n % LLAMA_IO_BLOCK;
+    win_pos = 0;
+
+    return true;
+}
+
+bool llama_io_read_direct::next_block() {
+    if (err || !win) {
+        return false;
+    }
+
+    if (win_len - win_pos < LLAMA_IO_BLOCK) {
+        if (!refill_window()) {
+            return false;
+        }
+    }
+
+    blk = win + win_pos;
+
+    win_pos += LLAMA_IO_BLOCK;
     blk_off += LLAMA_IO_BLOCK;
 
     if (framed) {
@@ -415,7 +571,7 @@ bool llama_io_read_direct::next_block() {
 }
 
 void llama_io_read_direct::read_prefix(void * dst, size_t size) {
-    if (err || !blk) {
+    if (err || !win) {
         return;
     }
     if (size > LLAMA_IO_BLOCK) {
@@ -423,13 +579,22 @@ void llama_io_read_direct::read_prefix(void * dst, size_t size) {
         return;
     }
 
-    ssize_t n = ::pread(fd, blk, LLAMA_IO_BLOCK, 0);
-    if (n < (ssize_t) LLAMA_IO_BLOCK) {
+    // the header shares a window with the blocks that follow it, so opening a file costs one
+    // read rather than two
+    blk_off = 0;
+    if (!refill_window()) {
+        if (!eof) {
+            return; // an error is already set
+        }
         err = EBADMSG;
         return;
     }
 
-    memcpy(dst, blk, size);
+    memcpy(dst, win, size);
+
+    win_pos = LLAMA_IO_BLOCK;
+    blk_off = LLAMA_IO_BLOCK;
+    blk     = win;
 }
 
 void llama_io_read_direct::read(void * dst, size_t size) {
@@ -458,7 +623,9 @@ void llama_io_read_direct::read(void * dst, size_t size) {
 }
 
 void llama_io_read_direct::read_tensor(ggml_tensor * tensor, size_t offset, size_t size) {
-    std::vector<uint8_t> tmp(LLAMA_IO_BLOCK);
+    // one device copy per window, for the same reason as the write side. read() reassembles
+    // across blocks, so the granularity here does not change what the stream means
+    std::vector<uint8_t> tmp(std::min<size_t>(LLAMA_IO_WIN, size));
 
     for (size_t done = 0; done < size && !err; ) {
         const size_t take = std::min(tmp.size(), size - done);

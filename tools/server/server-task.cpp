@@ -12,6 +12,11 @@
 
 #include <sstream>
 
+#include <cstdio>
+#include <cstring>
+
+#include <sys/stat.h>
+
 //
 // task_params
 //
@@ -1688,6 +1693,66 @@ json server_task_result_apply_lora::to_json() {
 //
 // server_prompt_cache
 //
+// An entry is a token list plus a payload. The payload is either host RAM, which is the
+// behaviour without --cache-disk-path, or a file. With a disk path the payload streams through
+// O_DIRECT with a per save generation and a verify pass, so a save either leaves an intact file
+// or fails, and a load that fails is a miss and never an error to the client.
+//
+// Host memory per disk entry is the token list the match runs on, 4 bytes per token, plus the
+// store's reused staging windows. Nothing scales with context length. See the design at
+// docs/superpowers/specs/2026-09-28-ssd-prompt-cache-design.md
+
+static std::string server_hex64(uint64_t v) {
+    static const char * digits = "0123456789abcdef";
+
+    std::string s(16, '0');
+    for (int i = 0; i < 16; ++i) {
+        s[15 - i] = digits[v & 0xF];
+        v >>= 4;
+    }
+    return s;
+}
+
+// FNV-1a over the token ids, with the length folded in, so a prompt and a longer prompt that
+// starts with it land in different files by construction rather than by luck
+static uint64_t server_hash_tokens(const server_tokens & tokens) {
+    uint64_t h = 1469598103934665603ull;
+
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        const uint32_t t = (uint32_t) tokens[i];
+        for (int b = 0; b < 4; ++b) {
+            h ^= (uint8_t) (t >> (8 * b));
+            h *= 1099511628211ull;
+        }
+    }
+
+    h ^= (uint64_t) tokens.size();
+    h *= 1099511628211ull;
+
+    return h;
+}
+
+static bool server_cache_file_exists(const std::string & path) {
+    struct stat st;
+    return !path.empty() && ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+std::string server_prompt_cache::entry_path(const server_tokens & tokens, bool drft) const {
+    // the fingerprint is what stops a file written under one model or one KV type from being
+    // read back under another
+    return disk_path + "/" + fingerprint + "-" + server_hex64(server_hash_tokens(tokens)) +
+           (drft ? ".d.kvs" : ".kvs");
+}
+
+void server_prompt_cache::unlink_state(const server_prompt_cache_state & st) {
+    if (!st.data.path_tgt.empty()) {
+        ::remove(st.data.path_tgt.c_str());
+    }
+    if (!st.data.path_dft.empty()) {
+        ::remove(st.data.path_dft.c_str());
+    }
+}
+
 size_t server_prompt_cache::size() const {
     size_t res = 0;
 
@@ -1719,10 +1784,13 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
         }
     }
 
-    // calculate checkpoints size to see if it will fit with the prompt
+    // calculate checkpoints size to see if it will fit with the prompt. a disk entry does not
+    // carry checkpoints, they stay a slot local mechanism
     size_t checkpoints_size = 0;
-    for (const auto & ckpt : prompt.checkpoints) {
-        checkpoints_size += ckpt.size();
+    if (!disk()) {
+        for (const auto & ckpt : prompt.checkpoints) {
+            checkpoints_size += ckpt.size();
+        }
     }
 
     const size_t state_size_new = state_size_tgt + state_size_dft + checkpoints_size;
@@ -1741,6 +1809,7 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
         if (len == (int) it->prompt.tokens.size()) {
             SRV_TRC(" - removing obsolete cached prompt with length %d\n", len);
 
+            unlink_state(*it);
             it = states.erase(it);
         } else {
             ++it;
@@ -1748,49 +1817,175 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
     }
 
     if (limit_size > 0) {
-        // make room before allocating the new vectors to avoid breaching the limit
+        // make room before allocating the new payload to avoid breaching the limit
         while (!states.empty() && size() + state_size_new > limit_size) {
             SRV_WRN(" - making room for prompt cache entry, removing oldest entry (size = %.3f MiB)\n",
                     states.front().size() / (1024.0 * 1024.0));
 
+            unlink_state(states.front());
             states.pop_front();
         }
     }
 
-    std::vector<uint8_t> state_data_tgt;
-    std::vector<uint8_t> state_data_dft;
+    server_prompt_cache_state st;
 
-    // check if we can allocate enough memory for the new state
-    try {
-        state_data_tgt.resize(state_size_tgt);
-        state_data_dft.resize(state_size_dft);
-    } catch (const std::bad_alloc & e) {
-        SRV_ERR("failed to allocate memory for prompt cache state: %s\n", e.what());
+    st.prompt.tokens = prompt.tokens.clone();
 
-        limit_size = std::max<size_t>(1, 0.4*size());
+    if (disk()) {
+        // the payload is written by save(), once the caller knows the entry is wanted
+        st.data.path_tgt = entry_path(prompt.tokens, false);
+        st.data.size_tgt = state_size_tgt;
+        if (state_size_dft > 0) {
+            st.data.path_dft = entry_path(prompt.tokens, true);
+            st.data.size_dft = state_size_dft;
+        }
+    } else {
+        st.prompt.checkpoints = prompt.checkpoints;
 
-        SRV_WRN(" - cache size limit reduced to %.3f MiB\n", limit_size / (1024.0 * 1024.0));
+        // check if we can allocate enough memory for the new state
+        try {
+            st.data.main.resize(state_size_tgt);
+            st.data.drft.resize(state_size_dft);
+        } catch (const std::bad_alloc & e) {
+            SRV_ERR("failed to allocate memory for prompt cache state: %s\n", e.what());
 
-        update();
+            limit_size = std::max<size_t>(1, 0.4*size());
 
-        return nullptr;
+            SRV_WRN(" - cache size limit reduced to %.3f MiB\n", limit_size / (1024.0 * 1024.0));
+
+            update();
+
+            return nullptr;
+        }
     }
 
-    states.push_back({
-        /*.prompt =*/ {
-            /*.tokens      =*/ prompt.tokens.clone(),
-            /*.checkpoints =*/ prompt.checkpoints,
-        },
-        /*.data   =*/ {
-            /*.main =*/ std::move(state_data_tgt),
-            /*.drft =*/ std::move(state_data_dft),
-        },
-    });
+    states.push_back(std::move(st));
 
     return &states.back();
 }
 
-bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
+bool server_prompt_cache::save(
+        server_prompt_cache_state * st,
+        llama_context * ctx_tgt,
+        llama_context * ctx_dft,
+        llama_seq_id seq_id,
+        const server_tokens & tokens) {
+    if (!disk()) {
+        llama_state_seq_get_data_ext(ctx_tgt, st->data.main.data(), st->data.main.size(), seq_id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        if (ctx_dft) {
+            llama_state_seq_get_data_ext(ctx_dft, st->data.drft.data(), st->data.drft.size(), seq_id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        }
+        return true;
+    }
+
+    const llama_tokens & toks = tokens.get_tokens();
+
+    size_t written_tgt = 0;
+    try {
+        written_tgt = llama_state_seq_save_file_direct(
+                ctx_tgt, st->data.path_tgt.c_str(), seq_id, toks.data(), toks.size());
+    } catch (const std::exception & e) {
+        // the engine's serializer can throw, and a save must fail soft like any other failure
+        SRV_WRN(" - failed to write prompt cache entry %s: %s\n", st->data.path_tgt.c_str(), e.what());
+        written_tgt = 0;
+    }
+
+    if (written_tgt == 0) {
+        SRV_WRN(" - failed to write prompt cache entry %s\n", st->data.path_tgt.c_str());
+        discard(st);
+        return false;
+    }
+    st->data.size_tgt = written_tgt;
+
+    if (ctx_dft) {
+        size_t written_dft = 0;
+        try {
+            written_dft = llama_state_seq_save_file_direct(
+                    ctx_dft, st->data.path_dft.c_str(), seq_id, toks.data(), toks.size());
+        } catch (const std::exception & e) {
+            SRV_WRN(" - failed to write draft prompt cache entry %s: %s\n", st->data.path_dft.c_str(), e.what());
+            written_dft = 0;
+        }
+
+        if (written_dft == 0) {
+            SRV_WRN(" - failed to write draft prompt cache entry %s\n", st->data.path_dft.c_str());
+            discard(st);
+            return false;
+        }
+        st->data.size_dft = written_dft;
+    }
+
+    return true;
+}
+
+void server_prompt_cache::discard(server_prompt_cache_state * st) {
+    for (auto it = states.begin(); it != states.end(); ++it) {
+        if (&(*it) == st) {
+            unlink_state(*it);
+            states.erase(it);
+            return;
+        }
+    }
+}
+
+void server_prompt_cache::rescan() {
+    if (!disk()) {
+        return;
+    }
+
+    std::error_code ec;
+
+    for (const auto & de : std::filesystem::directory_iterator(disk_path, ec)) {
+        if (ec) {
+            SRV_WRN(" - cannot read the prompt cache directory %s: %s\n", disk_path.c_str(), ec.message().c_str());
+            break;
+        }
+        if (!de.is_regular_file(ec)) {
+            continue;
+        }
+
+        // "<fingerprint>-<hash>.kvs", with the draft variant ending ".d.kvs"
+        const std::string name = de.path().filename().string();
+
+        if (name.size() < fingerprint.size() + 21 ||
+            name.compare(0, fingerprint.size(), fingerprint) != 0 ||
+            name.compare(name.size() - 4, 4, ".kvs") != 0 ||
+            name.compare(name.size() - 6, 6, ".d.kvs") == 0) {
+            continue;
+        }
+
+        const std::string path = de.path().string();
+
+        size_t n_tok = 0;
+        if (llama_state_seq_file_tokens(path.c_str(), nullptr, 0, &n_tok) == 0 || n_tok == 0) {
+            continue; // not a readable entry, left where it is
+        }
+
+        std::vector<llama_token> toks(n_tok);
+        if (llama_state_seq_file_tokens(path.c_str(), toks.data(), toks.size(), &n_tok) != n_tok) {
+            continue;
+        }
+
+        server_prompt_cache_state st;
+
+        st.prompt.tokens = server_tokens(toks, false);
+        st.data.path_tgt = path;
+        st.data.size_tgt = (size_t) de.file_size(ec);
+
+        states.push_back(std::move(st));
+    }
+
+    SRV_TRC(" - prompt cache rescan found %zu entries in %s\n", states.size(), disk_path.c_str());
+
+    // the budget still applies, so a directory with more than it allows is trimmed here
+    update();
+}
+
+bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, bool * restored) {
+    if (restored) {
+        *restored = false;
+    }
+
     const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
 
     float f_keep_best = prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
@@ -1802,6 +1997,10 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
 
     // find the most similar cached prompt, that would also preserve the most context
     for (auto it = states.begin(); it != states.end(); ++it) {
+        if (disk() && !server_cache_file_exists(it->data.path_tgt)) {
+            continue; // a payload that is not there is not a candidate
+        }
+
         const int lcp_cur = it->prompt.tokens.get_common_prefix(tokens_new);
 
         const float f_keep_cur = float(lcp_cur) / it->prompt.tokens.size();
@@ -1822,16 +2021,105 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
         }
     }
 
-    if (it_best != states.end()) {
-        SRV_TRC(" - found better prompt with f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
+    if (it_best == states.end()) {
+        return true; // nothing in the cache beats what the slot already holds
+    }
 
-        {
-            auto & data = it_best->data.main;
+    SRV_TRC(" - found better prompt with f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
+
+    if (disk()) {
+        // read the file back and require it to be the one this entry names. a shorter read, a
+        // mismatch, or a damaged block is a miss, never a wrong answer. the entry and its file
+        // are kept, because the same prefix will be asked for again.
+        std::vector<llama_token> toks(it_best->prompt.tokens.size());
+        size_t n_tok = 0;
+
+        size_t n = 0;
+        try {
+            n = llama_state_seq_load_file_direct(
+                    ctx_tgt, it_best->data.path_tgt.c_str(), id_slot, toks.data(), toks.size(), &n_tok);
+        } catch (const std::exception & e) {
+            // the engine throws on a header or layout the state cannot fit, and a request must
+            // never fail because of the cache. anything it already restored is cleared by the
+            // caller, which sees the same failure a short read gives
+            SRV_WRN(" - prompt cache entry %s failed to restore: %s, treating as a miss\n",
+                    it_best->data.path_tgt.c_str(), e.what());
+            n = 0;
+        }
+
+        if (n == 0) {
+            SRV_WRN(" - failed to load prompt cache entry %s, treating as a miss\n", it_best->data.path_tgt.c_str());
+            unlink_state(*it_best);
+            states.erase(it_best);
+            return false;
+        }
+
+        if (n_tok != it_best->prompt.tokens.size() ||
+            memcmp(toks.data(), it_best->prompt.tokens.get_tokens().data(), n_tok * sizeof(llama_token)) != 0) {
+            SRV_WRN(" - prompt cache entry %s does not hold the prompt it is filed under, treating as a miss\n",
+                    it_best->data.path_tgt.c_str());
+            unlink_state(*it_best);
+            states.erase(it_best);
+            return false;
+        }
+
+        if (ctx_dft && !it_best->data.path_dft.empty()) {
+            std::vector<llama_token> toks_dft(it_best->prompt.tokens.size());
+            size_t n_tok_dft = 0;
+
+            size_t n_dft = 0;
+            try {
+                n_dft = llama_state_seq_load_file_direct(
+                        ctx_dft, it_best->data.path_dft.c_str(), id_slot, toks_dft.data(), toks_dft.size(), &n_tok_dft);
+            } catch (const std::exception & e) {
+                SRV_WRN(" - draft prompt cache entry %s failed to restore: %s, treating as a miss\n",
+                        it_best->data.path_dft.c_str(), e.what());
+                n_dft = 0;
+            }
+
+            if (n_dft == 0) {
+                SRV_WRN(" - failed to load draft prompt cache entry %s, treating as a miss\n", it_best->data.path_dft.c_str());
+                unlink_state(*it_best);
+                states.erase(it_best);
+                return false;
+            }
+        }
+
+        // a copy, because the entry stays in the cache
+        prompt = it_best->prompt.clone();
+
+        if (restored) {
+            *restored = true;
+        }
+
+        return true;
+    }
+
+    {
+        auto & data = it_best->data.main;
+
+        const size_t size = data.size();
+        const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.data(), size, id_slot, 0);
+        if (n != size) {
+            SRV_ERR("failed to restore state with size %zu\n", size);
+
+            return false;
+        }
+
+        data.clear();
+        data.shrink_to_fit();
+    }
+
+    {
+        auto & data = it_best->data.drft;
+
+        if (!data.empty()) {
+            GGML_ASSERT(ctx_dft);
 
             const size_t size = data.size();
-            const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.data(), size, id_slot, 0);
+            const size_t n = llama_state_seq_set_data_ext(ctx_dft, data.data(), size, id_slot, 0);
             if (n != size) {
-                SRV_ERR("failed to restore state with size %zu\n", size);
+                SRV_WRN("failed to restore state with size %zu\n", size);
 
                 return false;
             }
@@ -1839,29 +2127,14 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
             data.clear();
             data.shrink_to_fit();
         }
+    }
 
-        {
-            auto & data = it_best->data.drft;
+    prompt = std::move(it_best->prompt);
 
-            if (!data.empty()) {
-                GGML_ASSERT(ctx_dft);
+    states.erase(it_best);
 
-                const size_t size = data.size();
-                const size_t n = llama_state_seq_set_data_ext(ctx_dft, data.data(), size, id_slot, 0);
-                if (n != size) {
-                    SRV_WRN("failed to restore state with size %zu\n", size);
-
-                    return false;
-                }
-
-                data.clear();
-                data.shrink_to_fit();
-            }
-        }
-
-        prompt = std::move(it_best->prompt);
-
-        states.erase(it_best);
+    if (restored) {
+        *restored = true;
     }
 
     return true;
@@ -1872,6 +2145,7 @@ void server_prompt_cache::update() {
         while (!states.empty() && size() > limit_size) {
             SRV_WRN(" - cache size limit reached, removing oldest entry (size = %.3f MiB)\n", states.front().size() / (1024.0 * 1024.0));
 
+            unlink_state(states.front());
             states.pop_front();
         }
     }
@@ -1887,6 +2161,7 @@ void server_prompt_cache::update() {
             SRV_WRN(" - cache token limit (%zu, est: %zu) reached, removing oldest entry (size = %.3f MiB)\n",
                     limit_tokens, limit_tokens_cur, states.front().size() / (1024.0 * 1024.0));
 
+            unlink_state(states.front());
             states.pop_front();
         }
     }

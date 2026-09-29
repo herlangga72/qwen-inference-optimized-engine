@@ -3387,6 +3387,50 @@ size_t llama_context::state_seq_load_file_direct(llama_seq_id seq_id, const char
     return nread;
 }
 
+size_t llama_state_seq_file_tokens(const char * filepath, llama_token * tokens_out, size_t n_token_capacity, size_t * n_token_count_out) {
+    // the same reader the loader uses, so the header layout is validated in one place and a
+    // damaged file reports 0 here too
+    llama_io_read_direct io(filepath, true);
+
+    if (!io.good()) {
+        return 0;
+    }
+
+    uint32_t hdr[5] = { 0, 0, 0, 0, 0 };
+    io.read_prefix(hdr, sizeof(hdr));
+
+    if (!io.good() ||
+        hdr[0] != LLAMA_STATE_SEQ_MAGIC ||
+        hdr[1] != LLAMA_STATE_SEQ_VERSION ||
+        llama_io_crc32(hdr, 3 * sizeof(uint32_t)) != hdr[3] ||
+        hdr[4] == 0) {
+        return 0;
+    }
+
+    io.set_gen(hdr[4]);
+
+    const size_t n_token_count = hdr[2];
+
+    if (n_token_count_out != nullptr) {
+        *n_token_count_out = n_token_count;
+    }
+
+    if (tokens_out == nullptr) {
+        return n_token_count;
+    }
+
+    if (n_token_count > n_token_capacity) {
+        return 0;
+    }
+
+    io.read(tokens_out, sizeof(llama_token) * n_token_count);
+    if (!io.good()) {
+        return 0;
+    }
+
+    return n_token_count;
+}
+
 size_t llama_context::state_write_data(llama_io_write_i & io) {
     LLAMA_LOG_DEBUG("%s: writing state\n", __func__);
 

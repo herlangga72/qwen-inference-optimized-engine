@@ -165,6 +165,8 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `-ctxcp, --ctx-checkpoints, --swa-checkpoints N` | max number of context checkpoints to create per slot (default: 32)[(more info)](https://github.com/ggml-org/llama.cpp/pull/15293)<br/>(env: LLAMA_ARG_CTX_CHECKPOINTS) |
 | `-cms, --checkpoint-min-step N` | minimum spacing between context checkpoints in tokens (default: 8192, 0 = no minimum)<br/>(env: LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT) |
 | `-cram, --cache-ram N` | set the maximum cache size in MiB (default: 8192, -1 - no limit, 0 - disable)[(more info)](https://github.com/ggml-org/llama.cpp/pull/16391)<br/>(env: LLAMA_ARG_CACHE_RAM) |
+| `--cache-disk-path DIR` | directory to hold prompt cache entries as files instead of host RAM. entries stream to disk with `O_DIRECT`, so the cache does not grow the resident set. pair with `--cache-ram 0`<br/>(env: LLAMA_ARG_CACHE_DISK_PATH) |
+| `--cache-disk-mib N` | maximum size of the on-disk prompt cache in MiB (default: 8192, -1 - no limit, 0 - disable)<br/>(env: LLAMA_ARG_CACHE_DISK_MIB) |
 | `-kvu, --kv-unified, -no-kvu, --no-kv-unified` | use single unified KV buffer shared across all sequences (default: enabled if number of slots is auto)<br/>(env: LLAMA_ARG_KV_UNIFIED) |
 | `--cache-idle-slots, --no-cache-idle-slots` | save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram)<br/>(env: LLAMA_ARG_CACHE_IDLE_SLOTS) |
 | `--context-shift, --no-context-shift` | whether to use context shift on infinite text generation (default: disabled)<br/>(env: LLAMA_ARG_CONTEXT_SHIFT) |
@@ -585,6 +587,8 @@ These words will not be included in the completion, so make sure to add them to 
 `id_slot`: Assign the completion task to an specific slot. If is -1 the task will be assigned to a Idle slot.  Default: `-1`
 
 `cache_prompt`: Re-use KV cache from a previous request if possible. This way the common prefix does not have to be re-processed, only the suffix that differs between the requests. Because (depending on the backend) the logits are **not** guaranteed to be bit-for-bit identical for different batch sizes (prompt processing vs. token generation) enabling this option can cause nondeterministic results. Default: `true`
+
+With `--cache-disk-path` the reuse also survives the request that caused it. A slot that is about to lose any of its context is parked to a file and a later request for that prefix is restored from it, so a conversation that comes back after other traffic, or after a server restart, still pays only for its new tokens. Entries are named by the cache configuration and the prefix, and `--cache-disk-mib` bounds the directory, removing the oldest entry when it is reached.
 
 `return_tokens`: Return the raw generated token ids in the `tokens` field. Otherwise `tokens` remains empty. Default: `false`
 
